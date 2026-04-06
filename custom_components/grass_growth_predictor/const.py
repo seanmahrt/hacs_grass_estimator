@@ -26,12 +26,12 @@ DEFAULT_ENABLE_SOIL_MOISTURE = True
 DEFAULT_ENABLE_SOIL_TEMP = True
 
 # ----- Update intervals (seconds) -----
-WEATHER_UPDATE_INTERVAL = 10_800    # 3 h
-SOIL_UPDATE_INTERVAL = 21_600       # 6 h
-HEIGHT_UPDATE_INTERVAL = 3_600      # 1 h
+WEATHER_UPDATE_INTERVAL = 43_200    # 12 h
+SOIL_UPDATE_INTERVAL = 43_200       # 12 h
+HEIGHT_UPDATE_INTERVAL = 43_200     # 12 h
 
 # ----- API base URLs -----
-OWM_BASE_URL = "https://api.openweathermap.org/data/2.5/onecall"
+OWM_BASE_URL = "https://api.openweathermap.org/data/3.0/onecall"
 NSM_BASE_URL = "https://nationalsoilmoisture.com/test/data_api/"
 SCAN_STATIONS_URL = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1/stations"
 SCAN_DATA_URL = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1/data"
@@ -64,6 +64,8 @@ SERVICE_MARK_MOWED = "mark_mowed"
 # ----- Persistent store keys -----
 STORE_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 STORE_MOWED_TO_HEIGHT = "mowed_to_height"
+STORE_WEATHER_FETCHED_AT = "weather_fetched_at"
+STORE_WEATHER_DATA = "weather_data"
 
 # ----- Sensor / attribute names -----
 SENSOR_CURRENT_GRASS_HEIGHT = "current_grass_height"

@@ -41,6 +41,8 @@ from .const import (
     STORAGE_VERSION,
     STORE_LAST_MOW_TIMESTAMP,
     STORE_MOWED_TO_HEIGHT,
+    STORE_WEATHER_DATA,
+    STORE_WEATHER_FETCHED_AT,
     WEATHER_UPDATE_INTERVAL,
 )
 
@@ -113,6 +115,16 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stored = await self._store.async_load()
         if stored:
             self._stored_data = dict(stored)
+            # Restore weather cache so a restart doesn't burn an extra API call
+            raw_ts = self._stored_data.get(STORE_WEATHER_FETCHED_AT)
+            if raw_ts:
+                try:
+                    self._weather_fetched_at = datetime.fromisoformat(raw_ts)
+                except (ValueError, TypeError):
+                    pass
+            raw_data = self._stored_data.get(STORE_WEATHER_DATA)
+            if isinstance(raw_data, dict):
+                self._weather_data = raw_data
 
     async def async_mark_mowed(self, mowed_to_height: float | None = None) -> None:
         """Record a mowing event; persist and refresh immediately."""
@@ -167,7 +179,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def _fetch_weather(self, session) -> None:
-        """Fetch GDD and rainfall via OpenWeatherMap One Call 2.5."""
+        """Fetch GDD and rainfall via OpenWeatherMap One Call 3.0."""
         cfg = self._cfg
         lat = cfg.get(CONF_LATITUDE, self.hass.config.latitude)
         lon = cfg.get(CONF_LONGITUDE, self.hass.config.longitude)
@@ -198,6 +210,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._weather_data = {"gdd": gdd, "rainfall": rain_inches}
             self._weather_fetched_at = dt_util.now()
+            self._stored_data[STORE_WEATHER_FETCHED_AT] = self._weather_fetched_at.isoformat()
+            self._stored_data[STORE_WEATHER_DATA] = self._weather_data
+            await self._store.async_save(self._stored_data)
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("OpenWeatherMap fetch failed: %s", err)

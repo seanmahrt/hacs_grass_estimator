@@ -83,18 +83,7 @@ Reports the estimated grass height in **inches**.
 | `season_factor` | float | Current month's seasonal multiplier |
 | `enabled_multipliers` | list[str] | Which factors are active |
 
-### Height Formula
-
-```
-height = mowed_to_height + days_since_last_mow × daily_growth_rate
-
-daily_growth_rate = base_rate
-                  × season_factor
-                  × gdd_factor
-                  × rain_factor
-                  × soil_moisture_factor
-                  × soil_temp_factor
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full growth model and factor details.
 
 ---
 
@@ -146,14 +135,12 @@ entities:
 
 ---
 
-## Update Intervals
+## Documentation
 
-| Data source | Interval |
+| Document | Description |
 |---|---|
-| OpenWeatherMap (GDD + rain) | Every 3 hours |
-| National Soil Moisture Network | Every 6 hours |
-| USDA SCAN (soil temperature) | Every 6 hours |
-| Height calculation | Every 1 hour |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Component diagrams, data-flow sequence, growth model formula, update intervals |
+| [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
 
 ---
 
