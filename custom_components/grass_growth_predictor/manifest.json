@@ -1,0 +1,12 @@
+{
+  "domain": "grass_growth_predictor",
+  "name": "Grass Growth Predictor",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/your-username/hacs-grass-estimator",
+  "issue_tracker": "https://github.com/your-username/hacs-grass-estimator/issues",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "codeowners": [],
+  "dependencies": []
+}

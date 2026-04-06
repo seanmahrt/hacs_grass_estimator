@@ -1,0 +1,21 @@
+mark_mowed:
+  name: Mark Mowed
+  description: >
+    Records a mowing event. Resets the growth timer to now and
+    optionally overrides the starting height. After calling this service
+    the sensor will immediately recalculate grass height from zero growth.
+  fields:
+    mowed_to_height:
+      name: Mowed To Height
+      description: >
+        The height the grass was cut to, in inches. When omitted the value
+        configured in the integration options is used.
+      required: false
+      example: 3.0
+      selector:
+        number:
+          min: 0.5
+          max: 12.0
+          step: 0.5
+          unit_of_measurement: "in"
+          mode: slider

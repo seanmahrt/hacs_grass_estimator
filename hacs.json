@@ -1,0 +1,9 @@
+{
+  "name": "Grass Growth Predictor",
+  "domains": ["sensor"],
+  "country": ["US"],
+  "homeassistant": "2024.1.0",
+  "render_readme": true,
+  "zip_release": true,
+  "filename": "grass_growth_predictor.zip"
+}

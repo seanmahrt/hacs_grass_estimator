@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Grass Growth Predictor",
+        "description": "Connect to OpenWeatherMap and configure growth model parameters.",
+        "data": {
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "owm_api_key": "OpenWeatherMap API Key",
+          "mowed_to_height": "Mowed-To Height (inches)",
+          "base_growth_rate": "Base Growth Rate (inches/day)",
+          "enable_seasonal": "Enable Seasonal Factor",
+          "enable_gdd": "Enable Growing Degree Day Factor",
+          "enable_rain": "Enable Rainfall Factor",
+          "enable_soil_moisture": "Enable Soil Moisture Factor",
+          "enable_soil_temp": "Enable Soil Temperature Factor"
+        },
+        "data_description": {
+          "owm_api_key": "Free API key from openweathermap.org.",
+          "mowed_to_height": "Height in inches the lawn was last cut to (default 3.0).",
+          "base_growth_rate": "Maximum daily growth in inches under ideal conditions (default 0.15)."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to reach OpenWeatherMap. Check your network connection.",
+      "invalid_api_key": "The OpenWeatherMap API key was rejected. Verify the key and try again."
+    },
+    "abort": {
+      "already_configured": "A Grass Growth Predictor entry already exists for this location."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Grass Growth Predictor Options",
+        "data": {
+          "mowed_to_height": "Mowed-To Height (inches)",
+          "base_growth_rate": "Base Growth Rate (inches/day)",
+          "enable_seasonal": "Enable Seasonal Factor",
+          "enable_gdd": "Enable Growing Degree Day Factor",
+          "enable_rain": "Enable Rainfall Factor",
+          "enable_soil_moisture": "Enable Soil Moisture Factor",
+          "enable_soil_temp": "Enable Soil Temperature Factor"
+        }
+      }
+    }
+  },
+  "services": {
+    "mark_mowed": {
+      "name": "Mark Mowed",
+      "description": "Records a mowing event and resets the grass growth timer.",
+      "fields": {
+        "mowed_to_height": {
+          "name": "Mowed-To Height",
+          "description": "Height the grass was cut to in inches."
+        }
+      }
+    }
+  }
+}
