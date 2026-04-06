@@ -1,8 +1,8 @@
 # Grass Growth Predictor
 
 [![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/v/release/your-username/hacs-grass-estimator?style=for-the-badge)](https://github.com/your-username/hacs-grass-estimator/releases)
-[![License](https://img.shields.io/github/license/your-username/hacs-grass-estimator?style=for-the-badge)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/seanmahrt/hacs_grass_estimator?style=for-the-badge)](https://github.com/seanmahrt/hacs_grass_estimator/releases)
+[![License](https://img.shields.io/github/license/seanmahrt/hacs_grass_estimator?style=for-the-badge)](LICENSE)
 [![HA Min Version](https://img.shields.io/badge/Home%20Assistant-2024.1.0%2B-blue?style=for-the-badge)](https://www.home-assistant.io/)
 
 A Home Assistant custom integration that estimates your current grass height based on the time since your last mow, local weather data, soil conditions, and seasonal patterns.
@@ -29,13 +29,13 @@ A Home Assistant custom integration that estimates your current grass height bas
 
 1. Open **HACS → Integrations** in Home Assistant.
 2. Click the three-dot menu → **Custom repositories**.
-3. Add `https://github.com/your-username/hacs-grass-estimator` with category **Integration**.
+3. Add `https://github.com/seanmahrt/hacs_grass_estimator` with category **Integration**.
 4. Search for **Grass Growth Predictor** and click **Install**.
 5. Restart Home Assistant.
 
 ### Manual
 
-1. Download the [latest release](https://github.com/your-username/hacs-grass-estimator/releases/latest).
+1. Download the [latest release](https://github.com/seanmahrt/hacs_grass_estimator/releases/latest).
 2. Copy the `custom_components/grass_growth_predictor` folder into your
    `<config>/custom_components/` directory.
 3. Restart Home Assistant.
