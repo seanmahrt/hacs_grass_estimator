@@ -15,7 +15,7 @@ from .coordinator import GrassGrowthCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
 
 MARK_MOWED_SCHEMA = vol.Schema(
     {

@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -72,11 +73,11 @@ class CurrentGrassHeightSensor(CoordinatorEntity[GrassGrowthCoordinator], Sensor
         }
 
     @property
-    def device_info(self) -> dict:
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-            "name": "Grass Growth Predictor",
-            "manufacturer": "Custom Integration",
-            "model": "Grass Growth Predictor v1",
-            "entry_type": "service",
-        }
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name="Grass Growth Predictor",
+            manufacturer="Custom Integration",
+            model="Grass Growth Predictor v1",
+            entry_type=DeviceEntryType.SERVICE,
+        )

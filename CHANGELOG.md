@@ -7,15 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [1.1.0] — 2026-04-06
+
+### Fixed
+- **Internal error 500 on options dialog**: `OptionsFlow.__init__` was passing `config_entry` to the base class, which HA 2024.x+ sets automatically. Removed the override so the gear icon opens correctly.
+- **Integration failed to load** (`ImportError`): `sensor.py` imported `ATTR_ENABLED_MULTIPLIERS`, `ATTR_SEASON_FACTOR`, `ATTR_SOIL_MOISTURE`, and `ATTR_SOIL_TEMPERATURE` from `const.py` but they were never defined there.
+
 ### Changed
-- Upgraded OpenWeatherMap endpoint from One Call **2.5** to One Call **3.0** pay-per-call API.
-- All data sources (weather, soil moisture, soil temperature) now refresh every **12 hours** instead of the previous mixed 1 h / 3 h / 6 h schedule.
-- Coordinator poll interval aligned to 12 hours.
+- `config_flow.py`: Return type updated from deprecated `FlowResult` to `ConfigFlowResult` for both the config flow and options flow steps.
+- `sensor.py` / `button.py`: `device_info` now returns a typed `DeviceInfo` object with `DeviceEntryType.SERVICE` instead of a raw `dict` with a plain string.
+- `button.py`: `MarkMowedButton` now extends `CoordinatorEntity` for proper availability tracking when the coordinator is unavailable.
+- `manifest.json`: Bumped version to `1.1.0`; added explicit `homeassistant` minimum version (`>=2024.1.0`).
 
 ### Added
-- Weather data (`gdd`, `rainfall`) and the fetch timestamp are now **persisted to HA storage** so a Home Assistant restart does not trigger an unnecessary OpenWeatherMap API call if the 12-hour TTL has not elapsed.
-- `ARCHITECTURE.md` — Mermaid diagrams covering component layout, data-flow sequence, and the growth model.
-- `CHANGELOG.md` — this file.
+- `ATTR_ENABLED_MULTIPLIERS`, `ATTR_SEASON_FACTOR`, `ATTR_SOIL_MOISTURE`, `ATTR_SOIL_TEMPERATURE` added to `const.py`.
 
 ---
 

@@ -70,11 +70,18 @@ STORE_WEATHER_DATA = "weather_data"
 # ----- Sensor / attribute names -----
 SENSOR_CURRENT_GRASS_HEIGHT = "current_grass_height"
 
+# ----- Button names -----
+BUTTON_MARK_MOWED = "mark_mowed"
+
 ATTR_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 ATTR_DAILY_GROWTH_RATE = "daily_growth_rate"
 ATTR_DAYS_SINCE_MOW = "days_since_last_mow"
 ATTR_GDD = "gdd"
 ATTR_RAINFALL = "rainfall"
+ATTR_SOIL_MOISTURE = "soil_moisture"
+ATTR_SOIL_TEMPERATURE = "soil_temperature"
+ATTR_SEASON_FACTOR = "season_factor"
+ATTR_ENABLED_MULTIPLIERS = "enabled_multipliers"
 ATTR_SOIL_MOISTURE = "soil_moisture"
 ATTR_SOIL_TEMPERATURE = "soil_temperature"
 ATTR_SEASON_FACTOR = "season_factor"

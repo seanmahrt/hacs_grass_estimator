@@ -1,11 +1,12 @@
 {
   "domain": "grass_growth_predictor",
   "name": "Grass Growth Predictor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "config_flow": true,
   "documentation": "https://github.com/seanmahrt/hacs_grass_estimator",
   "issue_tracker": "https://github.com/seanmahrt/hacs_grass_estimator/issues",
   "iot_class": "cloud_polling",
+  "homeassistant": ">=2024.1.0",
   "requirements": [],
   "codeowners": [],
   "dependencies": []

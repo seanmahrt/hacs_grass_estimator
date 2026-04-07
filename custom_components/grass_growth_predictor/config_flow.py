@@ -9,6 +9,7 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
@@ -81,7 +82,7 @@ class GrassGrowthPredictorConfigFlow(
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -164,18 +165,15 @@ class GrassGrowthPredictorConfigFlow(
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> GrassGrowthOptionsFlow:
-        return GrassGrowthOptionsFlow(config_entry)
+        return GrassGrowthOptionsFlow()
 
 
 class GrassGrowthOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Grass Growth Predictor."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
