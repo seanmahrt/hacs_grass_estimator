@@ -65,11 +65,15 @@ All options except location and API key can be changed later via **Configure** o
 
 ---
 
-## Sensor: `sensor.current_grass_height`
+## Sensors
+
+All sensors appear under the **Grass Growth Predictor** device.
+
+### `sensor.current_grass_height`
 
 Reports the estimated grass height in **inches**.
 
-### Attributes
+#### Attributes
 
 | Attribute | Type | Description |
 |---|---|---|
@@ -82,6 +86,20 @@ Reports the estimated grass height in **inches**.
 | `soil_temperature` | float (°F) | 2-inch soil temperature from nearest SCAN station |
 | `season_factor` | float | Current month's seasonal multiplier |
 | `enabled_multipliers` | list[str] | Which factors are active |
+
+### Contributing factor sensors
+
+Each input to the growth model is also exposed as its own sensor so you can monitor, graph, and use them in automations independently.
+
+| Entity | Unit | Description |
+|---|---|---|
+| `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
+| `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
+| `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
+| `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
+| `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
+| `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
+| `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full growth model and factor details.
 

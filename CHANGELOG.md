@@ -9,6 +9,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] — 2026-04-06
+
+### Added
+- Seven new sensor entities exposing each growth model input as a first-class HA sensor: **Daily Growth Rate** (in/day), **Days Since Last Mow** (d), **Growing Degree Days** (°F·d), **Rainfall** (in), **Soil Moisture** (%), **Soil Temperature** (°F), and **Season Factor** (dimensionless). All sensors share the Grass Growth Predictor device and update on the same 12-hour coordinator cycle.
+- `SENSOR_DAILY_GROWTH_RATE`, `SENSOR_DAYS_SINCE_MOW`, `SENSOR_GDD`, `SENSOR_RAINFALL`, `SENSOR_SOIL_MOISTURE`, `SENSOR_SOIL_TEMPERATURE`, `SENSOR_SEASON_FACTOR` constants added to `const.py`.
+- Shared `_GrassBaseSensor` base class in `sensor.py` to reduce boilerplate across sensor entities.
+
+---
+
 ## [1.1.0] — 2026-04-06
 
 ### Fixed

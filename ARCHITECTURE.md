@@ -4,7 +4,24 @@
 
 ## Overview
 
-The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes a single sensor entity plus a `mark_mowed` service.
+The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes **eight sensor entities** plus a `mark_mowed` service.
+
+---
+
+## Sensors
+
+| Entity | Unit | Description |
+|---|---|---|
+| `sensor.current_grass_height` | in | Estimated current grass height |
+| `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
+| `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
+| `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
+| `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
+| `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
+| `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
+| `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
+
+All sensors share the same **Grass Growth Predictor** device and update together on the 12-hour coordinator cycle.
 
 ---
 
