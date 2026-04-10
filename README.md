@@ -20,6 +20,7 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Soil temperature factor** | Nearest USDA SCAN station soil temperature scales growth |
 | **Seasonal factor** | Month-based multiplier tuned for Northern Hemisphere cool-season turf |
 | **Toggle multipliers** | Each factor can be individually enabled or disabled |
+| **Automated mower control** | Switch output to trigger a mow session, binary sensors for recommended/overdue status, growth-based trigger with configurable min/max day bounds and maximum growth threshold |
 
 ---
 
@@ -60,20 +61,25 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Enable Rainfall Factor** | Apply rainfall multiplier | `true` |
 | **Enable Soil Moisture Factor** | Apply soil moisture multiplier | `true` |
 | **Enable Soil Temperature Factor** | Apply soil temperature multiplier | `true` |
+| **Minimum Days Between Mows** | Earliest day a growth-triggered mow can be recommended | `3` |
+| **Maximum Days Between Mows** | Days after which "Mow Overdue" turns ON regardless of height | `10` |
+| **Maximum Growth Between Mows (in)** | Growth above mowed-to height (inches) that triggers "Mow Recommended" between the day bounds | `1.5` |
 
 All options except location and API key can be changed later via **Configure** on the integration card.
 
 ---
 
-## Sensors
+## Entities
 
-All sensors appear under the **Grass Growth Predictor** device.
+All entities appear under the **Grass Growth Predictor** device.
 
-### `sensor.current_grass_height`
+### Sensors
+
+#### `sensor.current_grass_height`
 
 Reports the estimated grass height in **inches**.
 
-#### Attributes
+##### Attributes
 
 | Attribute | Type | Description |
 |---|---|---|
@@ -87,7 +93,7 @@ Reports the estimated grass height in **inches**.
 | `season_factor` | float | Current month's seasonal multiplier |
 | `enabled_multipliers` | list[str] | Which factors are active |
 
-### Contributing factor sensors
+#### Contributing factor sensors
 
 Each input to the growth model is also exposed as its own sensor so you can monitor, graph, and use them in automations independently.
 
@@ -95,11 +101,41 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 |---|---|---|
 | `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
 | `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
+| `sensor.growth_since_mow` | in | Estimated grass growth above the mowed-to height since the last mow. Compared against **Maximum Growth Between Mows** to trigger `mow_recommended`. |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
 | `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
 | `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
 | `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
+
+### Binary Sensors
+
+| Entity | Device class | Description |
+|---|---|---|
+| `binary_sensor.mow_recommended` | — | `ON` when `days_since_mow ≥ min_days` **AND** `growth_since_mow ≥ max_growth_between_mows`, or when `mow_overdue` is ON |
+| `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height |
+
+The min/max days act as hard bounds: `mow_recommended` will never fire before `min_days`, and always fires at `max_days`. Between those bounds, the grass growth estimate (`sensor.growth_since_mow`) drives the trigger.
+
+### Switch
+
+#### `switch.mow_session_active`
+
+Acts as the **output** to initiate an automated mowing session.
+
+| State | Meaning |
+|---|---|
+| `ON` | A mow session is in progress (mower dispatched / notification sent) |
+| `OFF` | No active session |
+
+Turning the switch **OFF** cancels the session without recording a mow. To record the mow as completed, press the **Mow Complete** button instead.
+
+### Buttons
+
+| Entity | Description |
+|---|---|
+| `button.mark_mowed` | Manual mow record — resets the growth timer immediately. Use for ad-hoc mowing outside of an automated session. |
+| `button.mow_complete` | Automated session completion — records the mow *and* deactivates the `mow_session_active` switch. |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full growth model and factor details.
 
@@ -107,7 +143,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full growth model and factor deta
 
 ## Service: `grass_growth_predictor.mark_mowed`
 
-Call this service every time you mow. It resets the growth timer to now and optionally sets a new starting height.
+Call this service every time you mow manually. It resets the growth timer to now and optionally sets a new starting height. This service is independent of the automated session switch — it works whether or not a session is active.
 
 ### Parameters
 
@@ -149,6 +185,73 @@ title: Lawn Status
 entities:
   - entity: sensor.current_grass_height
     name: Current Height
+```
+
+---
+
+## Automated Mower Control
+
+The integration supports a full automated mowing workflow while still allowing manual mow recording at any point.
+
+### Workflow
+
+```
+[Mow Recommended ON] → send notification / queue session
+       ↓
+[User/automation turns ON switch.mow_session_active]
+       ↓  (mowing happens)
+[Press button.mow_complete  OR  call mark_mowed service]
+       ↓
+[Mow recorded, switch turns OFF, timer resets]
+```
+
+### Example automation: notify and auto-start on overdue
+
+```yaml
+automation:
+  - alias: "Send mow notification when recommended"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.mow_recommended
+        to: "on"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "Lawn needs mowing"
+          message: "Grass is ready to mow. Tap to start a session."
+
+  - alias: "Escalate when overdue"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.mow_overdue
+        to: "on"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.mow_session_active
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "Mowing overdue!"
+          message: "Auto-starting mow session — confirm when done."
+```
+
+### Example automation: record completion
+
+```yaml
+automation:
+  - alias: "Record mow when mower docks"
+    trigger:
+      - platform: state
+        entity_id: sensor.robomow_status
+        to: "docked"
+    condition:
+      - condition: state
+        entity_id: switch.mow_session_active
+        state: "on"
+    action:
+      - service: button.press
+        target:
+          entity_id: button.mow_complete
 ```
 
 ---

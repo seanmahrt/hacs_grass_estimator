@@ -15,15 +15,23 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    BINARY_SENSOR_MOW_OVERDUE,
+    BINARY_SENSOR_MOW_RECOMMENDED,
     CONF_BASE_GROWTH_RATE,
     CONF_ENABLE_GDD,
     CONF_ENABLE_RAIN,
     CONF_ENABLE_SEASONAL,
     CONF_ENABLE_SOIL_MOISTURE,
     CONF_ENABLE_SOIL_TEMP,
+    CONF_MAX_DAYS_BETWEEN_MOWS,
+    CONF_MAX_GROWTH_BETWEEN_MOWS,
+    CONF_MIN_DAYS_BETWEEN_MOWS,
     CONF_MOWED_TO_HEIGHT,
     CONF_OWM_API_KEY,
     DEFAULT_BASE_GROWTH_RATE,
+    DEFAULT_MAX_DAYS_BETWEEN_MOWS,
+    DEFAULT_MAX_GROWTH_BETWEEN_MOWS,
+    DEFAULT_MIN_DAYS_BETWEEN_MOWS,
     DEFAULT_MOWED_TO_HEIGHT,
     DOMAIN,
     GDD_BASE_TEMP_F,
@@ -40,6 +48,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
     STORE_LAST_MOW_TIMESTAMP,
+    STORE_MOW_SESSION_ACTIVE,
     STORE_MOWED_TO_HEIGHT,
     STORE_WEATHER_DATA,
     STORE_WEATHER_FETCHED_AT,
@@ -106,6 +115,10 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
+    @property
+    def mow_session_active(self) -> bool:
+        return bool(self._stored_data.get(STORE_MOW_SESSION_ACTIVE, False))
+
     # ------------------------------------------------------------------
     # Setup / service handlers
     # ------------------------------------------------------------------
@@ -135,6 +148,29 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stored_data[STORE_MOWED_TO_HEIGHT] = float(mowed_to_height)
         await self._store.async_save(self._stored_data)
         await self.async_refresh()
+
+    async def async_complete_mow(self, mowed_to_height: float | None = None) -> None:
+        """Record a completed mow from an automated session and end the session."""
+        now = dt_util.now()
+        if mowed_to_height is None:
+            mowed_to_height = self._cfg.get(CONF_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT)
+        self._stored_data[STORE_LAST_MOW_TIMESTAMP] = now.isoformat()
+        self._stored_data[STORE_MOWED_TO_HEIGHT] = float(mowed_to_height)
+        self._stored_data[STORE_MOW_SESSION_ACTIVE] = False
+        await self._store.async_save(self._stored_data)
+        await self.async_refresh()
+
+    async def async_start_mow_session(self) -> None:
+        """Activate the mow session output (e.g. dispatch mower or send notification)."""
+        self._stored_data[STORE_MOW_SESSION_ACTIVE] = True
+        await self._store.async_save(self._stored_data)
+        self.async_update_listeners()
+
+    async def async_end_mow_session(self) -> None:
+        """Cancel/deactivate the mow session without recording a mow."""
+        self._stored_data[STORE_MOW_SESSION_ACTIVE] = False
+        await self._store.async_save(self._stored_data)
+        self.async_update_listeners()
 
     # ------------------------------------------------------------------
     # DataUpdateCoordinator hook
@@ -327,6 +363,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         base_rate = float(cfg.get(CONF_BASE_GROWTH_RATE, DEFAULT_BASE_GROWTH_RATE))
+        min_days = float(cfg.get(CONF_MIN_DAYS_BETWEEN_MOWS, DEFAULT_MIN_DAYS_BETWEEN_MOWS))
+        max_days = float(cfg.get(CONF_MAX_DAYS_BETWEEN_MOWS, DEFAULT_MAX_DAYS_BETWEEN_MOWS))
+        max_growth = float(cfg.get(CONF_MAX_GROWTH_BETWEEN_MOWS, DEFAULT_MAX_GROWTH_BETWEEN_MOWS))
 
         weather = self._weather_data or {"gdd": 10.0, "rainfall": 0.0}
         gdd = float(weather.get("gdd", 10.0))
@@ -375,11 +414,22 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         current_height = self.mowed_to_height + days_since_mow * daily_rate
+        growth_since_mow = max(0.0, current_height - self.mowed_to_height)
+
+        # mow_overdue: hard upper bound — always ON at max_days regardless of height
+        mow_overdue = last_mow is None or days_since_mow >= max_days
+        # mow_recommended: growth-based trigger between the day bounds, or escalate to overdue
+        mow_recommended = (
+            last_mow is None
+            or mow_overdue
+            or (days_since_mow >= min_days and growth_since_mow >= max_growth)
+        )
 
         return {
             "current_height": round(current_height, 2),
             "daily_growth_rate": round(daily_rate, 5),
             "days_since_mow": round(days_since_mow, 3),
+            "growth_since_mow": round(growth_since_mow, 2),
             "last_mow_timestamp": last_mow.isoformat() if last_mow else None,
             "gdd": round(gdd, 2),
             "rainfall": round(rainfall, 4),
@@ -387,6 +437,8 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soil_temperature": round(soil_temp, 1),
             "season_factor": round(season_factor, 3),
             "enabled_multipliers": enabled,
+            BINARY_SENSOR_MOW_RECOMMENDED: mow_recommended,
+            BINARY_SENSOR_MOW_OVERDUE: mow_overdue,
         }
 
 

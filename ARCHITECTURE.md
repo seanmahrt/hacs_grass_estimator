@@ -4,17 +4,20 @@
 
 ## Overview
 
-The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes **eight sensor entities** plus a `mark_mowed` service.
+The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes **nine sensor entities**, **two binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
 
 ---
 
-## Sensors
+## Entities
+
+### Sensors
 
 | Entity | Unit | Description |
 |---|---|---|
 | `sensor.current_grass_height` | in | Estimated current grass height |
 | `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
 | `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
+| `sensor.growth_since_mow` | in | Grass growth above the mowed-to height since the last mow (used to drive `mow_recommended`) |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
 | `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
@@ -22,6 +25,26 @@ The integration estimates current grass height by accumulating a calculated dail
 | `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
 
 All sensors share the same **Grass Growth Predictor** device and update together on the 12-hour coordinator cycle.
+
+### Binary Sensors
+
+| Entity | Device class | Description |
+|---|---|---|
+| `binary_sensor.mow_recommended` | — | `ON` when (`days_since_mow ≥ min_days` AND `growth_since_mow ≥ max_growth_between_mows`) OR `mow_overdue` is ON |
+| `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height |
+
+### Switch
+
+| Entity | Description |
+|---|---|
+| `switch.mow_session_active` | Output that represents an in-progress mow session. Turn ON to dispatch/notify; turn OFF to cancel. State is persisted across restarts. |
+
+### Buttons
+
+| Entity | Description |
+|---|---|
+| `button.mark_mowed` | Records an ad-hoc manual mow; no session interaction. |
+| `button.mow_complete` | Records a completed automated mow *and* turns off `switch.mow_session_active`. |
 
 ---
 
@@ -33,7 +56,10 @@ flowchart TD
         CF["Config Flow\n(config_flow.py)\nUI setup & options"]
         INIT["__init__.py\nasync_setup_entry\nservice registration"]
         COORD["GrassGrowthCoordinator\n(coordinator.py)\npoll every 12 h"]
-        SENSOR["CurrentGrassHeightSensor\n(sensor.py)\nCoordinatorEntity"]
+        SENSOR["Sensor entities\n(sensor.py)\nCoordinatorEntity"]
+        BSENSOR["Binary sensor entities\n(binary_sensor.py)\nCoordinatorEntity"]
+        SWITCH["MowSessionSwitch\n(switch.py)\nCoordinatorEntity"]
+        BUTTON["MarkMowedButton · MowCompleteButton\n(button.py)\nCoordinatorEntity"]
         STORE[("HA Storage\n.storage/grass_growth_predictor")]
         SVC["Service: grass_growth_predictor.mark_mowed\noptional mowed_to_height (in)"]
     end
@@ -48,11 +74,16 @@ flowchart TD
     INIT -->|"creates"| COORD
     INIT -->|"registers"| SVC
     COORD -->|"subscribes"| SENSOR
-    COORD <-->|"persist weather cache\nlast mow timestamp\nmowed-to height"| STORE
+    COORD -->|"subscribes"| BSENSOR
+    COORD -->|"subscribes"| SWITCH
+    COORD -->|"subscribes"| BUTTON
+    COORD <-->|"persist weather cache\nlast mow timestamp\nmowed-to height\nmow session state"| STORE
     COORD -->|"fetch if TTL elapsed"| OWM
     COORD -->|"fetch if TTL elapsed"| NSM
     COORD -->|"resolve once, then fetch"| SCAN
     SVC -->|"async_mark_mowed()\nthen async_refresh()"| COORD
+    SWITCH -->|"async_start/end_mow_session()"| COORD
+    BUTTON -->|"async_mark_mowed() or async_complete_mow()"| COORD
 ```
 
 ---
@@ -96,6 +127,16 @@ sequenceDiagram
     User->>HA: call grass_growth_predictor.mark_mowed
     HA->>Coord: async_mark_mowed(mowed_to_height)
     Coord->>Store: persist last_mow_timestamp + mowed_to_height
+    Coord->>Coord: async_refresh() → _compute()
+
+    note over User,Coord: Automated mower workflow
+    User->>HA: turn on switch.mow_session_active
+    HA->>Coord: async_start_mow_session()
+    Coord->>Store: persist mow_session_active = true
+    note over User: Mowing occurs
+    User->>HA: press button.mow_complete
+    HA->>Coord: async_complete_mow(mowed_to_height)
+    Coord->>Store: persist last_mow_timestamp + mow_session_active = false
     Coord->>Coord: async_refresh() → _compute()
 ```
 
@@ -156,6 +197,7 @@ daily_rate = base_rate
 |---|---|
 | `last_mow_timestamp` | ISO timestamp of the most recent mow event |
 | `mowed_to_height` | Height the grass was cut to (inches) |
+| `mow_session_active` | Boolean — whether an automated mow session is in progress |
 | `weather_fetched_at` | ISO timestamp of last OWM fetch (prevents extra API calls on restart) |
 | `weather_data` | Cached `{gdd, rainfall}` from the last successful OWM response |
 
@@ -176,3 +218,6 @@ All data is written to HA's built-in `.storage/` mechanism and survives restarts
 | Enable rain | Scale by daily rainfall | ✓ |
 | Enable soil moisture | Scale by volumetric soil moisture | ✓ |
 | Enable soil temp | Scale by 2-inch soil temperature | ✓ |
+| Minimum days between mows | Lower day bound — `mow_recommended` will not fire before this | 3 days |
+| Maximum days between mows | Upper day bound — `mow_overdue` fires here regardless of height | 10 days |
+| Maximum growth between mows | Height growth above mowed-to height (in) that triggers `mow_recommended` between the day bounds | 1.5 in |

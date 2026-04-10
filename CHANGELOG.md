@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- **Automated mower control** — new entities for managing a mowing session workflow:
+  - `switch.mow_session_active` — output switch to initiate a mow session (dispatch a mower, send a push notification, etc.). Persisted to storage so state survives restarts.
+  - `binary_sensor.mow_recommended` — turns `ON` when `days_since_mow ≥ min_days` **AND** `growth_since_mow ≥ max_growth_between_mows`, or when `mow_overdue` is ON. Min/max days act as hard lower/upper bounds; growth does the actual triggering between them.
+  - `binary_sensor.mow_overdue` — turns `ON` when `days_since_mow ≥ max_days_between_mows` regardless of growth height. Exposed with `device_class: problem` for dashboard alerting.
+  - `button.mow_complete` — records a completed automated mow *and* deactivates `switch.mow_session_active` in a single action.
+  - `sensor.growth_since_mow` — reports estimated grass growth above the mowed-to height since the last mow (inches). This is the value compared against `max_growth_between_mows` to drive `mow_recommended`.
+- **Minimum Days Between Mows** option (default 3) — lower day bound; `mow_recommended` will not fire before this.
+- **Maximum Days Between Mows** option (default 10) — upper day bound; `mow_overdue` fires here regardless of height.
+- **Maximum Growth Between Mows** option (default 1.5 in) — height growth above mowed-to height that triggers `mow_recommended` between the day bounds.
+- `CONF_MIN_DAYS_BETWEEN_MOWS`, `CONF_MAX_DAYS_BETWEEN_MOWS`, `CONF_MAX_GROWTH_BETWEEN_MOWS` and their defaults in `const.py`.
+- `SENSOR_GROWTH_SINCE_MOW`, `STORE_MOW_SESSION_ACTIVE`, `SWITCH_MOW_SESSION`, `BINARY_SENSOR_MOW_RECOMMENDED`, `BINARY_SENSOR_MOW_OVERDUE`, `BUTTON_MOW_COMPLETE` constants in `const.py`.
+- `switch.py` and `binary_sensor.py` platform modules.
+- `async_start_mow_session()`, `async_end_mow_session()`, and `async_complete_mow()` coordinator methods.
+- `mow_session_active` property on `GrassGrowthCoordinator`.
+- `binary_sensor` and `switch` added to the `PLATFORMS` list in `__init__.py`.
+- New options fields (`min_days_between_mows`, `max_days_between_mows`, `max_growth_between_mows`) in the options flow and translation strings.
+
+### Note
+The existing `button.mark_mowed` button and `grass_growth_predictor.mark_mowed` service are **unchanged** — manual mow recording works exactly as before, independent of the session switch.
+
 ---
 
 ## [1.2.0] — 2026-04-06

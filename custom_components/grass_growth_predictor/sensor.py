@@ -24,6 +24,7 @@ from .const import (
     SENSOR_DAILY_GROWTH_RATE,
     SENSOR_DAYS_SINCE_MOW,
     SENSOR_GDD,
+    SENSOR_GROWTH_SINCE_MOW,
     SENSOR_RAINFALL,
     SENSOR_SEASON_FACTOR,
     SENSOR_SOIL_MOISTURE,
@@ -43,6 +44,7 @@ async def async_setup_entry(
             CurrentGrassHeightSensor(coordinator, entry),
             DailyGrowthRateSensor(coordinator, entry),
             DaysSinceMowSensor(coordinator, entry),
+            GrowthSinceMowSensor(coordinator, entry),
             GrowingDegreeDaysSensor(coordinator, entry),
             RainfallSensor(coordinator, entry),
             SoilMoistureSensor(coordinator, entry),
@@ -132,6 +134,19 @@ class DaysSinceMowSensor(_GrassBaseSensor):
     _attr_native_unit_of_measurement = "d"
     _attr_icon = "mdi:calendar-clock"
     _data_key = SENSOR_DAYS_SINCE_MOW
+
+
+class GrowthSinceMowSensor(_GrassBaseSensor):
+    """Sensor reporting the estimated grass growth since the last mow.
+
+    This is the value compared against 'Maximum Growth Between Mows' to
+    determine whether a mow session should be recommended.
+    """
+
+    _attr_name = "Growth Since Last Mow"
+    _attr_native_unit_of_measurement = "in"
+    _attr_icon = "mdi:grass"
+    _data_key = SENSOR_GROWTH_SINCE_MOW
 
 
 class GrowingDegreeDaysSensor(_GrassBaseSensor):
