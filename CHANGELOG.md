@@ -8,6 +8,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- **Wet-grass scheduling** — the integration now avoids mowing wet grass using OpenWeatherMap hourly forecast data:
+  - `binary_sensor.grass_wet` — `ON` when today's rainfall ≥ wet rain threshold **or** current hourly humidity ≥ wet humidity threshold. Device class `moisture`.
+  - `binary_sensor.dry_mow_window_soon` — `ON` when a contiguous dry window long enough to complete a full mow cycle is found within the hourly forecast lookahead.
+  - `sensor.next_dry_mow_window` — `SensorDeviceClass.TIMESTAMP` sensor reporting the start time of the next dry mow window, or `unknown` if none found.
+- **Force-mow growth threshold** (`force_mow_growth_threshold`, default 1.0 in) — when `growth_since_mow` exceeds this value, mowing is triggered regardless of wet conditions.
+- **Mow Cycle Duration** option (`mow_cycle_duration_hours`, default 12 h) — specifies how long the mower takes to complete one cycle; used to find a contiguous dry window.
+- **Wet Rain Threshold** option (`wet_rain_threshold_in`, default 0.1 in) — today's accumulated rainfall above which the grass is considered wet.
+- **Wet Humidity Threshold** option (`wet_humidity_pct`, default 85%) — current humidity above which the grass is considered wet from dew or overnight moisture.
+- **Dry Window Lookahead** option (`dry_window_lookahead_hours`, default 48 h) — hours of hourly forecast to scan; falls back to mowing anyway if no window is found.
+- OWM `hourly` data is now fetched (removed `hourly` from the `exclude` parameter) and cached to `hourly_forecast` in HA storage. Each slot stores `{dt, rain_1h, humidity, pop}`.
+- `_find_dry_mow_window()` pure function in `coordinator.py` — finds the first contiguous run of qualifying hourly slots (rain ≤ 0.04 in, pop ≤ 30%, humidity < threshold).
+
+### Changed
+- **`mow_recommended` logic** updated to a four-condition OR gate:
+  1. `mow_overdue` (days ≥ max_days) — always fires, ignores wet state
+  2. `force_mow` (growth ≥ force threshold) — always fires, ignores wet state
+  3. `normal_trigger AND NOT grass_wet` — ideal case: grown enough, currently dry
+  4. `normal_trigger AND grass_wet AND NOT dry_window_soon` — wet but no dry window coming → mow anyway to prevent indefinite delay
+- **`max_growth_between_mows` default** revised from 1.5 in to **0.5 in** so the normal trigger fires below the force-mow threshold (logical ordering: 0.5 in → start looking for dry window; 1.0 in → force mow).
+- Options UI labels updated: "Maximum Growth Between Mows" → "Normal Growth Trigger (inches)".
+
+### Added (constants)
+- `CONF_FORCE_MOW_GROWTH_THRESHOLD`, `CONF_MOW_CYCLE_DURATION_HOURS`, `CONF_WET_RAIN_THRESHOLD_IN`, `CONF_WET_HUMIDITY_PCT`, `CONF_DRY_WINDOW_LOOKAHEAD_HOURS` in `const.py`.
+- `DEFAULT_FORCE_MOW_GROWTH_THRESHOLD`, `DEFAULT_MOW_CYCLE_DURATION_HOURS`, `DEFAULT_WET_RAIN_THRESHOLD_IN`, `DEFAULT_WET_HUMIDITY_PCT`, `DEFAULT_DRY_WINDOW_LOOKAHEAD_HOURS` in `const.py`.
+- `SENSOR_NEXT_DRY_MOW_WINDOW`, `BINARY_SENSOR_GRASS_WET`, `BINARY_SENSOR_DRY_MOW_WINDOW_SOON`, `STORE_HOURLY_FORECAST` in `const.py`.
+
+### Note
+The existing `button.mark_mowed` button, `grass_growth_predictor.mark_mowed` service, and `switch.mow_session_active` switch are **unchanged** — all existing workflows remain fully compatible.
+
+---
+
+## [Unreleased — previously]
+
+### Added
 - **Automated mower control** — new entities for managing a mowing session workflow:
   - `switch.mow_session_active` — output switch to initiate a mow session (dispatch a mower, send a push notification, etc.). Persisted to storage so state survives restarts.
   - `binary_sensor.mow_recommended` — turns `ON` when `days_since_mow ≥ min_days` **AND** `growth_since_mow ≥ max_growth_between_mows`, or when `mow_overdue` is ON. Min/max days act as hard lower/upper bounds; growth does the actual triggering between them.

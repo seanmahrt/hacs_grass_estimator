@@ -20,7 +20,8 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Soil temperature factor** | Nearest USDA SCAN station soil temperature scales growth |
 | **Seasonal factor** | Month-based multiplier tuned for Northern Hemisphere cool-season turf |
 | **Toggle multipliers** | Each factor can be individually enabled or disabled |
-| **Automated mower control** | Switch output to trigger a mow session, binary sensors for recommended/overdue status, growth-based trigger with configurable min/max day bounds and maximum growth threshold |
+| **Automated mower control** | Switch output to trigger a mow session, binary sensors for recommended/overdue status, growth-based trigger with configurable min/max day bounds and growth thresholds |
+| **Wet-grass scheduling** | Skips mowing when grass is wet (recent rainfall or high humidity/dew). A configurable force-mow threshold overrides the wet check when the grass has grown too long. A dry-window lookahead scans the 48-hour hourly forecast to find a suitable mow window before falling back to mowing anyway. |
 
 ---
 
@@ -63,7 +64,12 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Enable Soil Temperature Factor** | Apply soil temperature multiplier | `true` |
 | **Minimum Days Between Mows** | Earliest day a growth-triggered mow can be recommended | `3` |
 | **Maximum Days Between Mows** | Days after which "Mow Overdue" turns ON regardless of height | `10` |
-| **Maximum Growth Between Mows (in)** | Growth above mowed-to height (inches) that triggers "Mow Recommended" between the day bounds | `1.5` |
+| **Normal Growth Trigger (in)** | Growth above mowed-to height (inches) that starts looking for a dry window to mow | `0.5` |
+| **Force-Mow Growth Threshold (in)** | Growth above mowed-to height (inches) that forces a mow regardless of wet conditions | `1.0` |
+| **Mow Cycle Duration (hours)** | How long the automated mower takes to complete one cycle; used to find a contiguous dry window | `12.0` |
+| **Wet Rain Threshold (in)** | Today's accumulated rainfall (inches) above which the grass is considered wet | `0.1` |
+| **Wet Humidity Threshold (%)** | Current humidity (%) above which the grass is considered wet from dew or overnight moisture | `85` |
+| **Dry Window Lookahead (hours)** | Hours of hourly forecast to scan for a dry mow window; if none found, mow anyway | `48` |
 
 All options except location and API key can be changed later via **Configure** on the integration card.
 
@@ -101,7 +107,8 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 |---|---|---|
 | `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
 | `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
-| `sensor.growth_since_mow` | in | Estimated grass growth above the mowed-to height since the last mow. Compared against **Maximum Growth Between Mows** to trigger `mow_recommended`. |
+| `sensor.growth_since_mow` | in | Estimated grass growth above the mowed-to height since the last mow. Compared against the normal growth trigger and force-mow threshold to drive `mow_recommended`. |
+| `sensor.next_dry_mow_window` | timestamp | Start time of the next forecasted dry window long enough to complete a full mow cycle, or `unknown` if none found in the lookahead period. |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
 | `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
@@ -112,10 +119,12 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 
 | Entity | Device class | Description |
 |---|---|---|
-| `binary_sensor.mow_recommended` | — | `ON` when `days_since_mow ≥ min_days` **AND** `growth_since_mow ≥ max_growth_between_mows`, or when `mow_overdue` is ON |
-| `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height |
+| `binary_sensor.mow_recommended` | — | `ON` according to the wet-grass scheduling logic (see **Wet-Grass Scheduling** section below) |
+| `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height or wet state |
+| `binary_sensor.grass_wet` | `moisture` | `ON` when today's rainfall ≥ wet rain threshold **or** current humidity ≥ wet humidity threshold |
+| `binary_sensor.dry_mow_window_soon` | — | `ON` when a dry window long enough to complete a full mow cycle exists within the lookahead period |
 
-The min/max days act as hard bounds: `mow_recommended` will never fire before `min_days`, and always fires at `max_days`. Between those bounds, the grass growth estimate (`sensor.growth_since_mow`) drives the trigger.
+The min/max days act as hard bounds: `mow_recommended` will never fire before `min_days`, and always fires at `max_days`. Between those bounds, the grass growth estimate and wet-grass scheduling logic drive the trigger.
 
 ### Switch
 
@@ -252,6 +261,71 @@ automation:
       - service: button.press
         target:
           entity_id: button.mow_complete
+```
+
+---
+
+## Wet-Grass Scheduling
+
+The integration avoids mowing wet grass by checking rainfall and humidity from the OpenWeatherMap hourly forecast. A force-mow threshold ensures the mower never delays indefinitely.
+
+### `mow_recommended` logic
+
+```
+mow_overdue    = days_since_mow ≥ max_days          ← always fires (ignores wet state)
+force_mow      = growth_since_mow ≥ 1.0 in          ← always fires (ignores wet state)
+days_ok        = days_since_mow ≥ min_days
+normal_trigger = days_ok AND growth_since_mow ≥ 0.5 in
+
+mow_recommended = mow_overdue
+               OR force_mow
+               OR (normal_trigger AND NOT grass_wet)
+               OR (normal_trigger AND grass_wet AND NOT dry_window_soon)
+```
+
+The last condition ensures the mower still runs when the grass has grown enough but no dry window is forecast within the lookahead period — preventing indefinite postponement during prolonged wet weather.
+
+### Wet state detection
+
+| Condition | Source |
+|---|---|
+| `rainfall ≥ wet_rain_threshold_in` | Today's accumulated precipitation from OWM daily forecast (mm → inches) |
+| `current_humidity ≥ wet_humidity_pct` | Humidity from the most recent OWM hourly slot |
+
+Either condition alone makes `binary_sensor.grass_wet` turn `ON`.
+
+### Dry-window detection
+
+Each hourly slot is tested against three internal thresholds:
+
+| Slot criterion | Value |
+|---|---|
+| Rain per hour | ≤ 0.04 in (~1 mm) |
+| Precipitation probability | ≤ 30% |
+| Relative humidity | < `wet_humidity_pct` |
+
+The integration looks for a contiguous run of qualifying hours equal to `mow_cycle_duration_hours`. The start time of the first such window is returned as `sensor.next_dry_mow_window`.
+
+### Example automation: wait for a dry window
+
+```yaml
+automation:
+  - alias: "Start mower when dry window arrives"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.dry_mow_window_soon
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: binary_sensor.mow_recommended
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.grass_wet
+        state: "off"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.mow_session_active
 ```
 
 ---

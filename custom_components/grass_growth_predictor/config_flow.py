@@ -17,26 +17,36 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_BASE_GROWTH_RATE,
+    CONF_DRY_WINDOW_LOOKAHEAD_HOURS,
     CONF_ENABLE_GDD,
     CONF_ENABLE_RAIN,
     CONF_ENABLE_SEASONAL,
     CONF_ENABLE_SOIL_MOISTURE,
     CONF_ENABLE_SOIL_TEMP,
+    CONF_FORCE_MOW_GROWTH_THRESHOLD,
     CONF_MAX_DAYS_BETWEEN_MOWS,
     CONF_MAX_GROWTH_BETWEEN_MOWS,
     CONF_MIN_DAYS_BETWEEN_MOWS,
+    CONF_MOW_CYCLE_DURATION_HOURS,
     CONF_MOWED_TO_HEIGHT,
     CONF_OWM_API_KEY,
+    CONF_WET_HUMIDITY_PCT,
+    CONF_WET_RAIN_THRESHOLD_IN,
     DEFAULT_BASE_GROWTH_RATE,
+    DEFAULT_DRY_WINDOW_LOOKAHEAD_HOURS,
     DEFAULT_ENABLE_GDD,
     DEFAULT_ENABLE_RAIN,
     DEFAULT_ENABLE_SEASONAL,
     DEFAULT_ENABLE_SOIL_MOISTURE,
     DEFAULT_ENABLE_SOIL_TEMP,
+    DEFAULT_FORCE_MOW_GROWTH_THRESHOLD,
     DEFAULT_MAX_DAYS_BETWEEN_MOWS,
     DEFAULT_MAX_GROWTH_BETWEEN_MOWS,
     DEFAULT_MIN_DAYS_BETWEEN_MOWS,
+    DEFAULT_MOW_CYCLE_DURATION_HOURS,
     DEFAULT_MOWED_TO_HEIGHT,
+    DEFAULT_WET_HUMIDITY_PCT,
+    DEFAULT_WET_RAIN_THRESHOLD_IN,
     DOMAIN,
     OWM_BASE_URL,
 )
@@ -227,6 +237,26 @@ class GrassGrowthOptionsFlow(config_entries.OptionsFlow):
                     CONF_MAX_GROWTH_BETWEEN_MOWS,
                     default=current.get(CONF_MAX_GROWTH_BETWEEN_MOWS, DEFAULT_MAX_GROWTH_BETWEEN_MOWS),
                 ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=6.0)),
+                vol.Required(
+                    CONF_FORCE_MOW_GROWTH_THRESHOLD,
+                    default=current.get(CONF_FORCE_MOW_GROWTH_THRESHOLD, DEFAULT_FORCE_MOW_GROWTH_THRESHOLD),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=6.0)),
+                vol.Required(
+                    CONF_MOW_CYCLE_DURATION_HOURS,
+                    default=current.get(CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=24.0)),
+                vol.Required(
+                    CONF_WET_RAIN_THRESHOLD_IN,
+                    default=current.get(CONF_WET_RAIN_THRESHOLD_IN, DEFAULT_WET_RAIN_THRESHOLD_IN),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.01, max=2.0)),
+                vol.Required(
+                    CONF_WET_HUMIDITY_PCT,
+                    default=current.get(CONF_WET_HUMIDITY_PCT, DEFAULT_WET_HUMIDITY_PCT),
+                ): vol.All(vol.Coerce(int), vol.Range(min=50, max=100)),
+                vol.Required(
+                    CONF_DRY_WINDOW_LOOKAHEAD_HOURS,
+                    default=current.get(CONF_DRY_WINDOW_LOOKAHEAD_HOURS, DEFAULT_DRY_WINDOW_LOOKAHEAD_HOURS),
+                ): vol.All(vol.Coerce(int), vol.Range(min=6, max=48)),
             }
         )
 

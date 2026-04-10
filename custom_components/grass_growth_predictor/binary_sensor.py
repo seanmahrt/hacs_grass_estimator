@@ -9,6 +9,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    BINARY_SENSOR_DRY_MOW_WINDOW_SOON,
+    BINARY_SENSOR_GRASS_WET,
     BINARY_SENSOR_MOW_OVERDUE,
     BINARY_SENSOR_MOW_RECOMMENDED,
     DOMAIN,
@@ -26,6 +28,8 @@ async def async_setup_entry(
         [
             MowRecommendedBinarySensor(coordinator, entry),
             MowOverdueBinarySensor(coordinator, entry),
+            GrassWetBinarySensor(coordinator, entry),
+            DryMowWindowSoonBinarySensor(coordinator, entry),
         ]
     )
 
@@ -73,9 +77,40 @@ class MowOverdueBinarySensor(_MowBinarySensorBase):
     """ON when the lawn has not been mowed within max_days_between_mows.
 
     Use this in automations to trigger an urgent alert or auto-start a mow session.
+    Always ON at max_days regardless of wet/dry grass state.
     """
 
     _attr_name = "Mow Overdue"
     _attr_icon = "mdi:alert-circle"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _data_key = BINARY_SENSOR_MOW_OVERDUE
+
+
+class GrassWetBinarySensor(_MowBinarySensorBase):
+    """ON when the grass is estimated to be wet.
+
+    Wet conditions are detected from two OWM proxies:
+    - Today's accumulated rainfall exceeds the configured rain threshold
+    - The current hourly humidity exceeds the configured humidity threshold (dew/overnight moisture)
+
+    When ON, mow sessions are deferred unless a dry window cannot be found
+    or the force-mow growth threshold is exceeded.
+    """
+
+    _attr_name = "Grass Wet"
+    _attr_icon = "mdi:water"
+    _attr_device_class = BinarySensorDeviceClass.MOISTURE
+    _data_key = BINARY_SENSOR_GRASS_WET
+
+
+class DryMowWindowSoonBinarySensor(_MowBinarySensorBase):
+    """ON when a suitable dry mow window exists within the lookahead period.
+
+    A dry window is a contiguous block of hourly forecast slots
+    (at least as long as the configured mow cycle duration) where rain,
+    probability of precipitation, and humidity are all below thresholds.
+    """
+
+    _attr_name = "Dry Mow Window Soon"
+    _attr_icon = "mdi:weather-sunny"
+    _data_key = BINARY_SENSOR_DRY_MOW_WINDOW_SOON
