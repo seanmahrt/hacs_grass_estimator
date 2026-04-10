@@ -58,6 +58,16 @@ SEASON_FACTORS: dict[int, float] = {
     12: 0.30,
 }
 
+# ----- Mower control config keys -----
+CONF_MIN_DAYS_BETWEEN_MOWS = "min_days_between_mows"
+CONF_MAX_DAYS_BETWEEN_MOWS = "max_days_between_mows"
+CONF_MAX_GROWTH_BETWEEN_MOWS = "max_growth_between_mows"
+
+# ----- Mower control defaults -----
+DEFAULT_MIN_DAYS_BETWEEN_MOWS = 3
+DEFAULT_MAX_DAYS_BETWEEN_MOWS = 10
+DEFAULT_MAX_GROWTH_BETWEEN_MOWS = 1.5  # inches above mowed-to height
+
 # ----- Service names -----
 SERVICE_MARK_MOWED = "mark_mowed"
 
@@ -66,11 +76,13 @@ STORE_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 STORE_MOWED_TO_HEIGHT = "mowed_to_height"
 STORE_WEATHER_FETCHED_AT = "weather_fetched_at"
 STORE_WEATHER_DATA = "weather_data"
+STORE_MOW_SESSION_ACTIVE = "mow_session_active"
 
 # ----- Sensor / attribute names -----
 SENSOR_CURRENT_GRASS_HEIGHT = "current_grass_height"
 SENSOR_DAILY_GROWTH_RATE = "daily_growth_rate"
 SENSOR_DAYS_SINCE_MOW = "days_since_mow"
+SENSOR_GROWTH_SINCE_MOW = "growth_since_mow"
 SENSOR_GDD = "gdd"
 SENSOR_RAINFALL = "rainfall"
 SENSOR_SOIL_MOISTURE = "soil_moisture"
@@ -79,6 +91,14 @@ SENSOR_SEASON_FACTOR = "season_factor"
 
 # ----- Button names -----
 BUTTON_MARK_MOWED = "mark_mowed"
+BUTTON_MOW_COMPLETE = "mow_complete"
+
+# ----- Switch names -----
+SWITCH_MOW_SESSION = "mow_session"
+
+# ----- Binary sensor names -----
+BINARY_SENSOR_MOW_RECOMMENDED = "mow_recommended"
+BINARY_SENSOR_MOW_OVERDUE = "mow_overdue"
 
 ATTR_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 ATTR_DAILY_GROWTH_RATE = "daily_growth_rate"

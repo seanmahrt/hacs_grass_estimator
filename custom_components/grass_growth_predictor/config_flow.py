@@ -22,6 +22,9 @@ from .const import (
     CONF_ENABLE_SEASONAL,
     CONF_ENABLE_SOIL_MOISTURE,
     CONF_ENABLE_SOIL_TEMP,
+    CONF_MAX_DAYS_BETWEEN_MOWS,
+    CONF_MAX_GROWTH_BETWEEN_MOWS,
+    CONF_MIN_DAYS_BETWEEN_MOWS,
     CONF_MOWED_TO_HEIGHT,
     CONF_OWM_API_KEY,
     DEFAULT_BASE_GROWTH_RATE,
@@ -30,6 +33,9 @@ from .const import (
     DEFAULT_ENABLE_SEASONAL,
     DEFAULT_ENABLE_SOIL_MOISTURE,
     DEFAULT_ENABLE_SOIL_TEMP,
+    DEFAULT_MAX_DAYS_BETWEEN_MOWS,
+    DEFAULT_MAX_GROWTH_BETWEEN_MOWS,
+    DEFAULT_MIN_DAYS_BETWEEN_MOWS,
     DEFAULT_MOWED_TO_HEIGHT,
     DOMAIN,
     OWM_BASE_URL,
@@ -209,6 +215,18 @@ class GrassGrowthOptionsFlow(config_entries.OptionsFlow):
                     CONF_ENABLE_SOIL_TEMP,
                     default=current.get(CONF_ENABLE_SOIL_TEMP, DEFAULT_ENABLE_SOIL_TEMP),
                 ): bool,
+                vol.Required(
+                    CONF_MIN_DAYS_BETWEEN_MOWS,
+                    default=current.get(CONF_MIN_DAYS_BETWEEN_MOWS, DEFAULT_MIN_DAYS_BETWEEN_MOWS),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=30)),
+                vol.Required(
+                    CONF_MAX_DAYS_BETWEEN_MOWS,
+                    default=current.get(CONF_MAX_DAYS_BETWEEN_MOWS, DEFAULT_MAX_DAYS_BETWEEN_MOWS),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                vol.Required(
+                    CONF_MAX_GROWTH_BETWEEN_MOWS,
+                    default=current.get(CONF_MAX_GROWTH_BETWEEN_MOWS, DEFAULT_MAX_GROWTH_BETWEEN_MOWS),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=6.0)),
             }
         )
 
