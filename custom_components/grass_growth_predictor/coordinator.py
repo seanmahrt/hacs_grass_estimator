@@ -80,6 +80,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Per-source cache
         self._weather_data: dict[str, Any] | None = None
         self._current_humidity: float = 0.0
+        self._current_wind_mph: float = 0.0
+        self._current_cloud_pct: float = 50.0
+        self._current_temp_f: float = 70.0
         self._hourly_forecast: list[dict[str, Any]] = []  # reduced hourly slots from HA weather entity
 
         self._soil_moisture_data: dict[str, Any] | None = None
@@ -235,9 +238,15 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         attrs = state.attributes
         temp_unit = attrs.get("temperature_unit", "°F")
         precip_unit = attrs.get("precipitation_unit", "mm")
+        wind_unit = attrs.get("wind_speed_unit", "mph")
 
         # Current humidity as a fallback when no hourly slots are available.
         self._current_humidity = float(attrs.get("humidity") or 0.0)
+        # Current drying-condition fallbacks from entity state attributes.
+        self._current_wind_mph = _to_mph(float(attrs.get("wind_speed") or 0.0), wind_unit)
+        self._current_cloud_pct = float(attrs.get("cloud_coverage") or 50.0)
+        raw_cur_temp = float(attrs.get("temperature") or 70.0)
+        self._current_temp_f = raw_cur_temp if temp_unit != "°C" else raw_cur_temp * 9.0 / 5.0 + 32.0
 
         # --- Daily forecast: GDD + today's rainfall ---
         try:
@@ -291,11 +300,16 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # HA weather entities report precipitation_probability as 0-100 %;
                 # our dry-window logic uses 0-1, so divide here.
                 pop_pct = float(slot.get("precipitation_probability") or 0.0)
+                raw_temp = float(slot.get("temperature") or 70.0)
+                temp_f = raw_temp if temp_unit != "°C" else raw_temp * 9.0 / 5.0 + 32.0
                 slots.append({
                     "dt": dt_epoch,
                     "rain_1h": rain_in,
                     "humidity": int(slot.get("humidity") or 0),
                     "pop": pop_pct / 100.0,
+                    "temp_f": temp_f,
+                    "wind_mph": _to_mph(float(slot.get("wind_speed") or 0.0), wind_unit),
+                    "cloud_pct": float(slot.get("cloud_coverage") or 50.0),
                 })
             self._hourly_forecast = slots
 
@@ -469,17 +483,36 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         growth_since_mow = max(0.0, current_height - self.mowed_to_height)
 
         # --- Wet grass detection ---
-        # Prefer the first hourly slot; fall back to the weather entity's current humidity.
-        current_humidity = (
-            float(self._hourly_forecast[0].get("humidity", 0))
-            if self._hourly_forecast
-            else self._current_humidity
+        # Prefer the first hourly slot for current conditions; fall back to entity state attrs.
+        if self._hourly_forecast:
+            cur_slot = self._hourly_forecast[0]
+            current_humidity = float(cur_slot.get("humidity", 0))
+            cur_temp_f = float(cur_slot.get("temp_f", self._current_temp_f))
+            cur_wind_mph = float(cur_slot.get("wind_mph", self._current_wind_mph))
+            cur_cloud_pct = float(cur_slot.get("cloud_pct", self._current_cloud_pct))
+        else:
+            current_humidity = self._current_humidity
+            cur_temp_f = self._current_temp_f
+            cur_wind_mph = self._current_wind_mph
+            cur_cloud_pct = self._current_cloud_pct
+
+        # Estimate how much of today's rainfall has already evaporated.
+        # Assume drying conditions have been roughly constant since dawn (06:00 local).
+        # This is a conservative lower bound — some drying may have occurred before dawn.
+        hours_since_dawn = max(0.0, (now.hour + now.minute / 60.0) - 6.0)
+        current_evap_rate = _evaporation_rate_in_per_hour(
+            cur_temp_f, cur_wind_mph, cur_cloud_pct, current_humidity
         )
-        grass_wet = (rainfall >= wet_rain_in) or (current_humidity >= wet_humidity)
+        evaporated_today = current_evap_rate * hours_since_dawn
+        current_moisture_in = max(0.0, rainfall - evaporated_today)
+
+        grass_wet = (current_moisture_in >= wet_rain_in) or (current_humidity >= wet_humidity)
 
         # --- Dry mow window ---
         hourly_window = self._hourly_forecast[:lookahead_h]
-        dry_window_epoch = _find_dry_mow_window(hourly_window, mow_cycle_h, wet_humidity)
+        dry_window_epoch = _find_dry_mow_window(
+            hourly_window, mow_cycle_h, wet_humidity, current_moisture_in, wet_rain_in
+        )
         dry_window_dt: datetime | None = (
             dt_util.utc_from_timestamp(dry_window_epoch)
             if dry_window_epoch is not None
@@ -488,16 +521,34 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         dry_window_soon = dry_window_dt is not None
 
         # --- Mow-not-advised: covers the whole mow cycle window ---
-        # ON when currently wet OR any hourly slot in the next mow_cycle_h hours is wet.
-        # Intended as a manual-mow indicator: if you start now, will conditions stay tolerable?
+        # ON when currently wet OR any hourly slot in the next mow_cycle_h hours is wet
+        # after accounting for projected evaporation through the cycle window.
         cycle_slots = self._hourly_forecast[:max(1, math.ceil(mow_cycle_h))]
-        rain_coming = any(
-            float(s.get("rain_1h", 0.0)) > _DRY_SLOT_RAIN_IN
-            or float(s.get("pop", 0.0)) > _DRY_SLOT_POP_MAX
-            or int(s.get("humidity", 0)) >= wet_humidity
-            for s in cycle_slots
-        )
-        mow_not_advised = grass_wet or rain_coming
+        moisture = current_moisture_in
+        rain_coming = grass_wet
+        if not rain_coming:
+            for i, s in enumerate(cycle_slots):
+                if i + 1 < len(cycle_slots):
+                    slot_dur_h = (int(cycle_slots[i + 1].get("dt") or 0) - int(s.get("dt") or 0)) / 3600.0
+                else:
+                    slot_dur_h = 1.0
+                slot_dur_h = max(slot_dur_h, 0.25)
+                evap = _evaporation_rate_in_per_hour(
+                    float(s.get("temp_f", cur_temp_f)),
+                    float(s.get("wind_mph", cur_wind_mph)),
+                    float(s.get("cloud_pct", cur_cloud_pct)),
+                    float(s.get("humidity", current_humidity)),
+                ) * slot_dur_h
+                moisture = max(0.0, moisture - evap) + float(s.get("rain_1h", 0.0))
+                if (
+                    moisture > _DRY_SLOT_RAIN_IN
+                    or float(s.get("rain_1h", 0.0)) > _DRY_SLOT_RAIN_IN
+                    or float(s.get("pop", 0.0)) > _DRY_SLOT_POP_MAX
+                    or int(s.get("humidity", 0)) >= wet_humidity
+                ):
+                    rain_coming = True
+                    break
+        mow_not_advised = rain_coming
 
         # --- Mowing thresholds ---
         # mow_overdue: hard upper bound — always ON at max_days, ignores wet state
@@ -527,6 +578,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_mow_timestamp": last_mow.isoformat() if last_mow else None,
             "gdd": round(gdd, 2),
             "rainfall": round(rainfall, 4),
+            "current_moisture": round(current_moisture_in, 4),
             "soil_moisture": round(soil_moisture, 1),
             "soil_temperature": round(soil_temp, 1),
             "season_factor": round(season_factor, 3),
@@ -549,40 +601,104 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 _DRY_SLOT_RAIN_IN = 0.04   # ≈ 1 mm/h; above this a slot is considered rainy
 _DRY_SLOT_POP_MAX = 0.30   # 30 % precipitation probability ceiling for a dry slot
 
+# Drying rate ceiling (in/h) under ideal conditions (sunny, windy, low humidity).
+# Used to prevent unrealistically fast drying estimates.
+_MAX_EVAP_RATE_IN_PER_HOUR = 0.08
+
+
+def _to_mph(speed: float, unit: str) -> float:
+    """Convert a wind speed value to miles per hour."""
+    unit_l = unit.lower()
+    if "km" in unit_l:          # km/h
+        return speed * 0.621371
+    if unit_l in ("m/s", "ms"): # m/s
+        return speed * 2.23694
+    return speed                 # already mph (or unknown — pass through)
+
+
+def _evaporation_rate_in_per_hour(
+    temp_f: float,
+    wind_mph: float,
+    cloud_pct: float,
+    humidity_pct: float,
+) -> float:
+    """Estimate surface evaporation from a wet grass surface (inches/hour).
+
+    Combines two components inspired by the Penman equation:
+
+    1. **Radiation term** — energy available to vaporise water.
+       Proxy: clear-sky fraction × temperature factor (warmer air holds more
+       energy and increases the vapour-pressure deficit).
+
+    2. **Aerodynamic term** — wind ventilates the wet surface and replaces
+       saturated air with drier ambient air (vapour-pressure deficit).
+
+    Calibration targets:
+    - Good drying (clear sky, 75 °F, 15 mph, 40% RH) → ~0.060 in/h
+    - Moderate drying (50% cloud, 65 °F, 10 mph, 60% RH) → ~0.025 in/h
+    - Poor drying (overcast, 50 °F, calm, 85% RH)       → ~0.001 in/h
+    """
+    temp_c = (temp_f - 32.0) * 5.0 / 9.0
+    solar = max(0.0, 1.0 - cloud_pct / 100.0)
+    vpd = max(0.0, 1.0 - humidity_pct / 100.0) * max(0.0, temp_c / 30.0)
+    wind_factor = 1.0 + min(wind_mph, 20.0) / 10.0  # 1.0 (calm) → 3.0 (20 mph)
+
+    radiation_term = 0.04 * solar * max(0.0, temp_c / 25.0)
+    aero_term = 0.02 * wind_factor * vpd
+
+    return min(_MAX_EVAP_RATE_IN_PER_HOUR, radiation_term + aero_term)
+
 
 def _find_dry_mow_window(
     hourly: list[dict[str, Any]],
     needed_hours: float,
     wet_humidity_pct: float,
+    initial_moisture_in: float = 0.0,
+    wet_rain_threshold_in: float = 0.1,
 ) -> int | None:
     """Return epoch timestamp of the first contiguous dry window long enough to mow.
 
-    A slot is 'dry' when:
-    - rain_1h <= _DRY_SLOT_RAIN_IN inches
-    - pop     <= _DRY_SLOT_POP_MAX
+    A slot is 'dry' when ALL of the following hold:
+    - Projected surface moisture ≤ wet_rain_threshold_in  (accounts for evaporation)
+    - rain_1h  ≤ _DRY_SLOT_RAIN_IN
+    - pop      ≤ _DRY_SLOT_POP_MAX
     - humidity < wet_humidity_pct
 
-    Window length is validated against actual slot timestamps so the result is
+    Moisture is projected forward by subtracting each slot's evaporation
+    (_evaporation_rate_in_per_hour × slot duration) and adding its rain_1h.
+
+    Window duration is validated against real timestamps so the result is
     correct regardless of the forecast interval (1 h, 3 h, etc.) used by the
     configured weather entity.
     """
     needed_secs = needed_hours * 3600.0
     window_start: int | None = None
+    moisture = initial_moisture_in
 
     for i, slot in enumerate(hourly):
+        slot_dt = int(slot.get("dt") or 0)
+        if i + 1 < len(hourly):
+            next_dt = int(hourly[i + 1].get("dt") or (slot_dt + 3600))
+        else:
+            next_dt = slot_dt + 3600
+        slot_dur_h = max((next_dt - slot_dt) / 3600.0, 0.25)
+
+        evap = _evaporation_rate_in_per_hour(
+            float(slot.get("temp_f", 70.0)),
+            float(slot.get("wind_mph", 0.0)),
+            float(slot.get("cloud_pct", 50.0)),
+            float(slot.get("humidity", 100)),
+        ) * slot_dur_h
+        moisture = max(0.0, moisture - evap) + float(slot.get("rain_1h", 0.0))
+
         if (
-            float(slot.get("rain_1h", 0.0)) <= _DRY_SLOT_RAIN_IN
+            moisture <= wet_rain_threshold_in
+            and float(slot.get("rain_1h", 0.0)) <= _DRY_SLOT_RAIN_IN
             and float(slot.get("pop", 0.0)) <= _DRY_SLOT_POP_MAX
             and int(slot.get("humidity", 100)) < wet_humidity_pct
         ):
-            slot_dt = int(slot.get("dt") or 0)
             if window_start is None:
                 window_start = slot_dt
-            # End of this slot's coverage: the next slot's start, or +1 h if last.
-            if i + 1 < len(hourly):
-                next_dt = int(hourly[i + 1].get("dt") or (slot_dt + 3600))
-            else:
-                next_dt = slot_dt + 3600
             if (next_dt - window_start) >= needed_secs:
                 return window_start
         else:
