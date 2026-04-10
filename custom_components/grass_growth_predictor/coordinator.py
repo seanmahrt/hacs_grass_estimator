@@ -12,7 +12,7 @@ from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -34,7 +34,7 @@ from .const import (
     CONF_MIN_DAYS_BETWEEN_MOWS,
     CONF_MOW_CYCLE_DURATION_HOURS,
     CONF_MOWED_TO_HEIGHT,
-    CONF_OWM_API_KEY,
+    CONF_WEATHER_ENTITY,
     CONF_WET_HUMIDITY_PCT,
     CONF_WET_RAIN_THRESHOLD_IN,
     DEFAULT_BASE_GROWTH_RATE,
@@ -45,16 +45,15 @@ from .const import (
     DEFAULT_MIN_DAYS_BETWEEN_MOWS,
     DEFAULT_MOW_CYCLE_DURATION_HOURS,
     DEFAULT_MOWED_TO_HEIGHT,
+    DEFAULT_WEATHER_ENTITY,
     DEFAULT_WET_HUMIDITY_PCT,
     DEFAULT_WET_RAIN_THRESHOLD_IN,
     DOMAIN,
     GDD_BASE_TEMP_F,
-    HEIGHT_UPDATE_INTERVAL,
     NSM_BASE_URL,
     OPTIMAL_GDD_DAILY,
     OPTIMAL_SOIL_MOISTURE_PCT,
     OPTIMAL_SOIL_TEMP_F,
-    OWM_BASE_URL,
     SCAN_DATA_URL,
     SCAN_STATIONS_URL,
     SEASON_FACTORS,
@@ -62,14 +61,9 @@ from .const import (
     SOIL_UPDATE_INTERVAL,
     STORAGE_KEY,
     STORAGE_VERSION,
-    STORE_HOURLY_FORECAST,
     STORE_LAST_MOW_TIMESTAMP,
     STORE_MOW_SESSION_ACTIVE,
     STORE_MOWED_TO_HEIGHT,
-    STORE_WEATHER_DATA,
-    STORE_WEATHER_FETCHED_AT,
-    WEATHER_MIN_UPDATE_INTERVAL,
-    WEATHER_UPDATE_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -85,8 +79,8 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Per-source cache
         self._weather_data: dict[str, Any] | None = None
-        self._weather_fetched_at: datetime | None = None
-        self._hourly_forecast: list[dict[str, Any]] = []  # reduced hourly slots from OWM
+        self._current_humidity: float = 0.0
+        self._hourly_forecast: list[dict[str, Any]] = []  # reduced hourly slots from HA weather entity
 
         self._soil_moisture_data: dict[str, Any] | None = None
         self._soil_moisture_fetched_at: datetime | None = None
@@ -102,9 +96,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            # Poll every 2 h so the dynamic OWM TTL (max 2 h, mow_cycle/2) is honoured.
-            # The height calculation and soil fetches use their own longer TTLs internally.
-            update_interval=timedelta(seconds=WEATHER_MIN_UPDATE_INTERVAL),
+            # Poll every 2 h — sufficient for mow-decision sensors; weather data
+            # comes from the HA weather entity (no direct API rate limit to worry about).
+            update_interval=timedelta(hours=2),
         )
 
     # ------------------------------------------------------------------
@@ -148,19 +142,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stored = await self._store.async_load()
         if stored:
             self._stored_data = dict(stored)
-            # Restore weather cache so a restart doesn't burn an extra API call
-            raw_ts = self._stored_data.get(STORE_WEATHER_FETCHED_AT)
-            if raw_ts:
-                try:
-                    self._weather_fetched_at = datetime.fromisoformat(raw_ts)
-                except (ValueError, TypeError):
-                    pass
-            raw_data = self._stored_data.get(STORE_WEATHER_DATA)
-            if isinstance(raw_data, dict):
-                self._weather_data = raw_data
-            raw_hourly = self._stored_data.get(STORE_HOURLY_FORECAST)
-            if isinstance(raw_hourly, list):
-                self._hourly_forecast = raw_hourly
 
     async def async_mark_mowed(self, mowed_to_height: float | None = None) -> None:
         """Record a mowing event; persist and refresh immediately."""
@@ -203,8 +184,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = dt_util.now()
         session = async_get_clientsession(self.hass)
 
-        if self._weather_needs_update(now):
-            await self._fetch_weather(session)
+        await self._read_weather_from_ha()
 
         if self._soil_moisture_needs_update(now):
             await self._fetch_soil_moisture(session)
@@ -217,16 +197,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
     # TTL helpers
     # ------------------------------------------------------------------
-
-    def _weather_needs_update(self, now: datetime) -> bool:
-        # Refresh OWM at half the mow-cycle duration, but never faster than 2 h.
-        mow_cycle_h = float(
-            self._cfg.get(CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS)
-        )
-        ttl = max(WEATHER_MIN_UPDATE_INTERVAL, (mow_cycle_h / 2.0) * 3600.0)
-        return self._weather_fetched_at is None or (
-            (now - self._weather_fetched_at).total_seconds() >= ttl
-        )
 
     def _soil_moisture_needs_update(self, now: datetime) -> bool:
         return self._soil_moisture_fetched_at is None or (
@@ -242,63 +212,95 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Fetchers
     # ------------------------------------------------------------------
 
-    async def _fetch_weather(self, session) -> None:
-        """Fetch GDD and rainfall via OpenWeatherMap One Call 3.0."""
+    async def _read_weather_from_ha(self) -> None:
+        """Read weather data from the configured HA weather entity.
+
+        Replaces direct OWM HTTP calls. The HA weather entity (e.g. the OWM
+        integration) manages its own fetch schedule and caching; we just read from it.
+        Uses weather.get_forecasts for both daily (GDD + rainfall) and hourly
+        (wet/dry scheduling) data.
+        """
         cfg = self._cfg
-        lat = cfg.get(CONF_LATITUDE, self.hass.config.latitude)
-        lon = cfg.get(CONF_LONGITUDE, self.hass.config.longitude)
-        api_key = cfg.get(CONF_OWM_API_KEY, "")
+        weather_entity_id = cfg.get(CONF_WEATHER_ENTITY, DEFAULT_WEATHER_ENTITY)
 
-        params = {
-            "lat": lat,
-            "lon": lon,
-            "appid": api_key,
-            "units": "imperial",
-            "exclude": "current,minutely,alerts",
-        }
-
-        try:
-            async with asyncio.timeout(30):
-                async with session.get(OWM_BASE_URL, params=params) as resp:
-                    resp.raise_for_status()
-                    payload = await resp.json()
-
-            daily = payload.get("daily") or [{}]
-            today = daily[0] if daily else {}
-            temp = today.get("temp") or {}
-            t_max = float(temp.get("max", 70))
-            t_min = float(temp.get("min", 50))
-            gdd = max(0.0, (t_max + t_min) / 2.0 - GDD_BASE_TEMP_F)
-            rain_mm = float(today.get("rain", 0.0))
-            rain_inches = rain_mm * 0.03937  # mm → inches
-
-            self._weather_data = {"gdd": gdd, "rainfall": rain_inches}
-            self._weather_fetched_at = dt_util.now()
-
-            # Parse hourly forecast — keep only fields needed for wet/dry scheduling.
-            # OWM hourly rain field is {"1h": mm} or absent; convert to inches.
-            hourly_raw = payload.get("hourly") or []
-            self._hourly_forecast = [
-                {
-                    "dt": int(slot.get("dt", 0)),
-                    "rain_1h": float(
-                        (slot.get("rain") or {}).get("1h", 0.0)
-                    ) * 0.03937,  # mm → inches
-                    "humidity": int(slot.get("humidity", 0)),
-                    "pop": float(slot.get("pop", 0.0)),
-                }
-                for slot in hourly_raw
-            ]
-
-            self._stored_data[STORE_WEATHER_FETCHED_AT] = self._weather_fetched_at.isoformat()
-            self._stored_data[STORE_WEATHER_DATA] = self._weather_data
-            self._stored_data[STORE_HOURLY_FORECAST] = self._hourly_forecast
-            await self._store.async_save(self._stored_data)
-
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("OpenWeatherMap fetch failed: %s", err)
+        state = self.hass.states.get(weather_entity_id)
+        if state is None or state.state in ("unavailable", "unknown"):
+            _LOGGER.warning(
+                "Weather entity %s is unavailable; using cached weather data", weather_entity_id
+            )
             if self._weather_data is None:
                 self._weather_data = {"gdd": 10.0, "rainfall": 0.0}
+            return
+
+        attrs = state.attributes
+        temp_unit = attrs.get("temperature_unit", "°F")
+        precip_unit = attrs.get("precipitation_unit", "mm")
+
+        # Current humidity as a fallback when no hourly slots are available.
+        self._current_humidity = float(attrs.get("humidity") or 0.0)
+
+        # --- Daily forecast: GDD + today's rainfall ---
+        try:
+            daily_resp = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"entity_id": weather_entity_id, "type": "daily"},
+                blocking=True,
+                return_response=True,
+            )
+            daily = (daily_resp or {}).get(weather_entity_id, {}).get("forecast") or []
+            today = daily[0] if daily else {}
+
+            t_high = float(today.get("temperature") or 70)
+            t_low = float(today.get("templow") or 50)
+            if temp_unit == "°C":
+                t_high = t_high * 9.0 / 5.0 + 32.0
+                t_low = t_low * 9.0 / 5.0 + 32.0
+            gdd = max(0.0, (t_high + t_low) / 2.0 - GDD_BASE_TEMP_F)
+
+            rain_raw = float(today.get("precipitation") or 0.0)
+            rain_inches = rain_raw * 0.03937 if precip_unit == "mm" else rain_raw
+
+            self._weather_data = {"gdd": gdd, "rainfall": rain_inches}
+
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to read daily forecast from %s: %s", weather_entity_id, err)
+            if self._weather_data is None:
+                self._weather_data = {"gdd": 10.0, "rainfall": 0.0}
+
+        # --- Hourly forecast: wet/dry scheduling ---
+        try:
+            hourly_resp = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"entity_id": weather_entity_id, "type": "hourly"},
+                blocking=True,
+                return_response=True,
+            )
+            hourly_raw = (hourly_resp or {}).get(weather_entity_id, {}).get("forecast") or []
+
+            slots = []
+            for slot in hourly_raw:
+                raw_dt = slot.get("datetime")
+                try:
+                    dt_epoch = int(datetime.fromisoformat(raw_dt).timestamp()) if raw_dt else 0
+                except (ValueError, TypeError):
+                    dt_epoch = 0
+                rain_raw = float(slot.get("precipitation") or 0.0)
+                rain_in = rain_raw * 0.03937 if precip_unit == "mm" else rain_raw
+                # HA weather entities report precipitation_probability as 0-100 %;
+                # our dry-window logic uses 0-1, so divide here.
+                pop_pct = float(slot.get("precipitation_probability") or 0.0)
+                slots.append({
+                    "dt": dt_epoch,
+                    "rain_1h": rain_in,
+                    "humidity": int(slot.get("humidity") or 0),
+                    "pop": pop_pct / 100.0,
+                })
+            self._hourly_forecast = slots
+
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to read hourly forecast from %s: %s", weather_entity_id, err)
 
     async def _fetch_soil_moisture(self, session) -> None:
         """Fetch volumetric soil moisture from National Soil Moisture Network."""
@@ -467,11 +469,11 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         growth_since_mow = max(0.0, current_height - self.mowed_to_height)
 
         # --- Wet grass detection ---
-        # Hourly[0] represents the current/nearest hour from the cached forecast.
+        # Prefer the first hourly slot; fall back to the weather entity's current humidity.
         current_humidity = (
             float(self._hourly_forecast[0].get("humidity", 0))
             if self._hourly_forecast
-            else 0.0
+            else self._current_humidity
         )
         grass_wet = (rainfall >= wet_rain_in) or (current_humidity >= wet_humidity)
 

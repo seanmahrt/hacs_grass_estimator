@@ -1,11 +1,9 @@
 """Config flow for the Grass Growth Predictor integration."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -13,7 +11,7 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
 from .const import (
     CONF_BASE_GROWTH_RATE,
@@ -29,7 +27,7 @@ from .const import (
     CONF_MIN_DAYS_BETWEEN_MOWS,
     CONF_MOW_CYCLE_DURATION_HOURS,
     CONF_MOWED_TO_HEIGHT,
-    CONF_OWM_API_KEY,
+    CONF_WEATHER_ENTITY,
     CONF_WET_HUMIDITY_PCT,
     CONF_WET_RAIN_THRESHOLD_IN,
     DEFAULT_BASE_GROWTH_RATE,
@@ -45,10 +43,10 @@ from .const import (
     DEFAULT_MIN_DAYS_BETWEEN_MOWS,
     DEFAULT_MOW_CYCLE_DURATION_HOURS,
     DEFAULT_MOWED_TO_HEIGHT,
+    DEFAULT_WEATHER_ENTITY,
     DEFAULT_WET_HUMIDITY_PCT,
     DEFAULT_WET_RAIN_THRESHOLD_IN,
     DOMAIN,
-    OWM_BASE_URL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,7 +55,9 @@ _STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_LATITUDE): cv.latitude,
         vol.Required(CONF_LONGITUDE): cv.longitude,
-        vol.Required(CONF_OWM_API_KEY): str,
+        vol.Required(CONF_WEATHER_ENTITY, default=DEFAULT_WEATHER_ENTITY): EntitySelector(
+            EntitySelectorConfig(domain="weather")
+        ),
         vol.Required(CONF_MOWED_TO_HEIGHT, default=DEFAULT_MOWED_TO_HEIGHT): vol.All(
             vol.Coerce(float), vol.Range(min=0.5, max=12.0)
         ),
@@ -73,22 +73,6 @@ _STEP_USER_SCHEMA = vol.Schema(
 )
 
 
-async def _validate_owm_api_key(session, api_key: str, lat: float, lon: float) -> bool:
-    """Return True if the OWM API key is accepted by the server."""
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": api_key,
-        "exclude": "minutely,hourly,daily,alerts",
-    }
-    try:
-        async with asyncio.timeout(10):
-            async with session.get(OWM_BASE_URL, params=params) as resp:
-                return resp.status == 200
-    except Exception:  # noqa: BLE001
-        return False
-
-
 class GrassGrowthPredictorConfigFlow(
     config_entries.ConfigFlow, domain=DOMAIN
 ):
@@ -102,29 +86,19 @@ class GrassGrowthPredictorConfigFlow(
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            session = async_get_clientsession(self.hass)
-            try:
-                valid = await _validate_owm_api_key(
-                    session,
-                    user_input[CONF_OWM_API_KEY],
-                    user_input[CONF_LATITUDE],
-                    user_input[CONF_LONGITUDE],
-                )
-            except aiohttp.ClientError:
-                errors["base"] = "cannot_connect"
+            weather_entity_id = user_input.get(CONF_WEATHER_ENTITY, DEFAULT_WEATHER_ENTITY)
+            if self.hass.states.get(weather_entity_id) is None:
+                errors[CONF_WEATHER_ENTITY] = "entity_not_found"
             else:
-                if not valid:
-                    errors[CONF_OWM_API_KEY] = "invalid_api_key"
-                else:
-                    unique_id = (
-                        f"{user_input[CONF_LATITUDE]:.4f}_{user_input[CONF_LONGITUDE]:.4f}"
-                    )
-                    await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
-                    return self.async_create_entry(
-                        title="Grass Growth Predictor",
-                        data=user_input,
-                    )
+                unique_id = (
+                    f"{user_input[CONF_LATITUDE]:.4f}_{user_input[CONF_LONGITUDE]:.4f}"
+                )
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title="Grass Growth Predictor",
+                    data=user_input,
+                )
 
         schema = vol.Schema(
             {
@@ -136,7 +110,10 @@ class GrassGrowthPredictorConfigFlow(
                     CONF_LONGITUDE,
                     default=(user_input or {}).get(CONF_LONGITUDE, self.hass.config.longitude),
                 ): cv.longitude,
-                vol.Required(CONF_OWM_API_KEY): str,
+                vol.Required(
+                    CONF_WEATHER_ENTITY,
+                    default=(user_input or {}).get(CONF_WEATHER_ENTITY, DEFAULT_WEATHER_ENTITY),
+                ): EntitySelector(EntitySelectorConfig(domain="weather")),
                 vol.Required(
                     CONF_MOWED_TO_HEIGHT,
                     default=(user_input or {}).get(CONF_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT),

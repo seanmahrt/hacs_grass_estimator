@@ -2,9 +2,29 @@
 
 → [README](README.md) · [CHANGELOG](CHANGELOG.md)
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Entities](#entities)
+  - [Sensors](#sensors)
+  - [Binary Sensors](#binary-sensors)
+  - [Switch](#switch)
+  - [Buttons](#buttons)
+- [Component Diagram](#component-diagram)
+- [Data Flow](#data-flow)
+- [Growth Model](#growth-model)
+  - [Height Formula](#height-formula)
+- [Update Intervals](#update-intervals)
+- [Persistence](#persistence)
+- [Configuration Options](#configuration-options)
+
+---
+
 ## Overview
 
-The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes **ten sensor entities**, **five binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
+The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every **2 hours** to refresh data, and exposes **ten sensor entities**, **five binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
+
+Weather data (GDD, rainfall, hourly humidity/precipitation) is read from a configured HA weather entity via `weather.get_forecasts` — no direct OWM API calls are made by this integration.
 
 ---
 
@@ -59,7 +79,7 @@ flowchart TD
     subgraph HA["Home Assistant"]
         CF["Config Flow\n(config_flow.py)\nUI setup & options"]
         INIT["__init__.py\nasync_setup_entry\nservice registration"]
-        COORD["GrassGrowthCoordinator\n(coordinator.py)\npoll every 12 h"]
+        COORD["GrassGrowthCoordinator\n(coordinator.py)\npoll every 2 h"]
         SENSOR["Sensor entities\n(sensor.py)\nCoordinatorEntity"]
         BSENSOR["Binary sensor entities\n(binary_sensor.py)\nCoordinatorEntity"]
         SWITCH["MowSessionSwitch\n(switch.py)\nCoordinatorEntity"]
@@ -68,8 +88,8 @@ flowchart TD
         SVC["Service: grass_growth_predictor.mark_mowed\noptional mowed_to_height (in)"]
     end
 
-    subgraph EXTERNAL["External APIs (fetched every 12 h)"]
-        OWM["OpenWeatherMap\nOne Call API 3.0\nGDD · rainfall"]
+    subgraph EXTERNAL["External APIs (soil only; weather data comes via HA weather entity)"]
+        WEATHER["HA Weather Entity\n(e.g. weather.openweathermap)\ndaily + hourly forecasts"]
         NSM["National Soil Moisture Network\nVolumetric soil moisture %"]
         SCAN["USDA SCAN REST API\nNearby station lookup\n2-inch soil temperature"]
     end
@@ -81,8 +101,8 @@ flowchart TD
     COORD -->|"subscribes"| BSENSOR
     COORD -->|"subscribes"| SWITCH
     COORD -->|"subscribes"| BUTTON
-    COORD <-->|"persist weather cache\nlast mow timestamp\nmowed-to height\nmow session state"| STORE
-    COORD -->|"fetch if TTL elapsed"| OWM
+    COORD <-->|"persist mow state\nmow session state"| STORE
+    COORD -->|"weather.get_forecasts (daily + hourly)"| WEATHER
     COORD -->|"fetch if TTL elapsed"| NSM
     COORD -->|"resolve once, then fetch"| SCAN
     SVC -->|"async_mark_mowed()\nthen async_refresh()"| COORD
@@ -109,11 +129,11 @@ sequenceDiagram
 
     loop Every 2 hours (coordinator poll)
         HA->>Coord: _async_update_data()
-        alt weather TTL elapsed
-            Coord->>OWM: GET /data/3.0/onecall\n(lat, lon, units=imperial, exclude=current,minutely,alerts)
-            OWM-->>Coord: daily[0].temp.max/min → GDD\ndaily[0].rain → rainfall (mm→in)\nhourly[0..47] → {dt, rain_1h, humidity, pop} (mm→in per slot)
-            Coord->>Store: persist weather_data + hourly_forecast + weather_fetched_at
-        end
+        Coord->>HAWeather: weather.get_forecasts(daily)
+        HAWeather-->>Coord: temperature high/low → GDD\nprecipitation → rainfall (unit-aware)
+        Coord->>HAWeather: weather.get_forecasts(hourly)
+        HAWeather-->>Coord: hourly {temperature, precipitation, humidity, precipitation_probability}
+        note over Coord: The HA weather entity manages its own OWM fetch schedule
         alt soil moisture TTL elapsed
             Coord->>NSM: GET moisture at depth=5 cm
             NSM-->>Coord: volumetric soil moisture %
@@ -188,10 +208,11 @@ daily_rate = base_rate
 
 | Data source | Fetch interval | Notes |
 |---|---|---|
-| OpenWeatherMap One Call 3.0 (GDD + rainfall + hourly) | `max(2 h, mow_cycle_duration / 2)` | Minimum 2 h; scales with the configured mow cycle. Default cycle = 12 h → 6 h interval. Cached to storage; survives HA restarts. |
+| HA weather entity (daily forecast: GDD + rainfall) | Every coordinator poll (2 h) | Reads from HA state via `weather.get_forecasts`. The weather entity manages its own OWM fetch schedule. |
+| HA weather entity (hourly forecast: humidity + rain per hour) | Every coordinator poll (2 h) | Same call; used for wet-grass and mow-not-advised logic. |
 | National Soil Moisture Network (soil moisture %) | 12 hours | In-memory cache only |
 | USDA SCAN (2-inch soil temperature) | 12 hours | Station triplet resolved once, then cached in memory |
-| Coordinator poll (height calculation + TTL checks) | 2 hours | Coordinator wakes every 2 h to honour the minimum OWM TTL; soil/height recalculation happens on the same tick but only fetches data when their individual TTLs are elapsed |
+| Coordinator poll (height calculation + all sensor updates) | 2 hours | Wakes every 2 h; soil data only re-fetched when their TTL has elapsed |
 
 ---
 
@@ -202,9 +223,8 @@ daily_rate = base_rate
 | `last_mow_timestamp` | ISO timestamp of the most recent mow event |
 | `mowed_to_height` | Height the grass was cut to (inches) |
 | `mow_session_active` | Boolean — whether an automated mow session is in progress |
-| `weather_fetched_at` | ISO timestamp of last OWM fetch (prevents extra API calls on restart) |
-| `weather_data` | Cached `{gdd, rainfall}` from the last successful OWM response |
-| `hourly_forecast` | Cached list of reduced hourly slots `{dt, rain_1h, humidity, pop}` from the last successful OWM response |
+
+Weather data is no longer cached to HA storage; the HA weather entity handles its own caching.
 
 All data is written to HA's built-in `.storage/` mechanism and survives restarts.
 
@@ -214,8 +234,8 @@ All data is written to HA's built-in `.storage/` mechanism and survives restarts
 
 | Option | Description | Default |
 |---|---|---|
-| Latitude / Longitude | Location for all API lookups | HA location |
-| OWM API Key | OpenWeatherMap One Call 3.0 key | — |
+| Latitude / Longitude | Location for soil API lookups | HA location |
+| Weather entity | HA weather entity ID for daily + hourly forecast data | `weather.openweathermap` |
 | Mowed to height | Starting height after a mow (in) | 3.0 in |
 | Base growth rate | Daily growth rate ceiling (in/day) | 0.15 in/day |
 | Enable seasonal | Apply monthly growth multiplier | ✓ |

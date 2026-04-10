@@ -9,6 +9,42 @@ A Home Assistant custom integration that estimates your current grass height bas
 
 ---
 
+## Table of Contents
+
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [Via HACS (Recommended)](#via-hacs-recommended)
+  - [Manual](#manual)
+- [Configuration](#configuration)
+- [How to Use](#how-to-use)
+  - [Inputs](#inputs--tell-the-integration-what-happened)
+  - [Outputs](#outputs--react-to-what-the-integration-tells-you)
+  - [Wiring Guide](#wiring-guide--recommended-setup)
+    - [1. Manual-only household](#1-manual-only-household-no-robot-mower)
+    - [2. Robot mower — notify and wait](#2-robot-mower--notify-and-wait-for-dry-conditions)
+    - [3. Robot mower — schedule at dry window](#3-robot-mower--schedule-at-the-next-dry-window)
+    - [4. Mow-overdue escalation](#4-mow-overdue-escalation)
+    - [5. Dashboard card](#5-dashboard-card)
+  - [Sensors](#sensors)
+  - [Binary Sensors](#binary-sensors)
+  - [Switch](#switch)
+  - [Buttons](#buttons)
+- [Service: mark\_mowed](#service-grass_growth_predictor-mark_mowed)
+- [Automated Mower Control](#automated-mower-control)
+  - [Workflow](#workflow)
+  - [Example: notify and auto-start on overdue](#example-automation-notify-and-auto-start-on-overdue)
+  - [Example: record completion](#example-automation-record-completion)
+- [Wet-Grass Scheduling](#wet-grass-scheduling)
+  - [`mow_recommended` logic](#mow_recommended-logic)
+  - [Wet state detection](#wet-state-detection)
+  - [Dry-window detection](#dry-window-detection)
+  - [Example: wait for a dry window](#example-automation-wait-for-a-dry-window)
+- [Documentation](#documentation)
+- [License](#license)
+
+---
+
 ## Features
 
 | Feature | Description |
@@ -22,6 +58,16 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Toggle multipliers** | Each factor can be individually enabled or disabled |
 | **Automated mower control** | Switch output to trigger a mow session, binary sensors for recommended/overdue status, growth-based trigger with configurable min/max day bounds and growth thresholds |
 | **Wet-grass scheduling** | Skips mowing when grass is wet (recent rainfall or high humidity/dew). A configurable force-mow threshold overrides the wet check when the grass has grown too long. A dry-window lookahead scans the 48-hour hourly forecast to find a suitable mow window before falling back to mowing anyway. |
+
+---
+
+## Prerequisites
+
+This integration reads weather data from an existing HA weather entity rather than making its own API calls. You need a weather integration that provides **daily and hourly forecasts** — the official [OpenWeatherMap integration](https://www.home-assistant.io/integrations/openweathermap/) is recommended.
+
+1. Install the **OpenWeatherMap** integration (or another weather integration with hourly forecast support).
+2. Note the entity ID it creates (typically `weather.openweathermap`).
+3. Then install and configure Grass Growth Predictor.
 
 ---
 
@@ -54,7 +100,8 @@ A Home Assistant custom integration that estimates your current grass height bas
 |---|---|---|
 | **Latitude** | Location latitude | HA configured latitude |
 | **Longitude** | Location longitude | HA configured longitude |
-| **OpenWeatherMap API Key** | Free key from [openweathermap.org](https://openweathermap.org/api) | — |
+| **Weather Entity** | The HA weather entity to read forecasts from (e.g. `weather.openweathermap`). Must support daily and hourly forecasts. | `weather.openweathermap` |
+| **Weather Entity** | The HA weather entity for daily and hourly forecast data. Must support both forecast types. | `weather.openweathermap` |
 | **Mowed-To Height (in)** | Height the grass was last cut to | `3.0` |
 | **Base Growth Rate (in/day)** | Maximum daily growth under ideal conditions | `0.15` |
 | **Enable Seasonal Factor** | Apply month-based growth multiplier | `true` |

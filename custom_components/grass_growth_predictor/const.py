@@ -7,7 +7,7 @@ STORAGE_KEY = f"{DOMAIN}.storage"
 STORAGE_VERSION = 1
 
 # ----- Config entry keys -----
-CONF_OWM_API_KEY = "owm_api_key"
+CONF_WEATHER_ENTITY = "weather_entity_id"
 CONF_MOWED_TO_HEIGHT = "mowed_to_height"
 CONF_BASE_GROWTH_RATE = "base_growth_rate"
 CONF_ENABLE_SEASONAL = "enable_seasonal"
@@ -17,6 +17,7 @@ CONF_ENABLE_SOIL_MOISTURE = "enable_soil_moisture"
 CONF_ENABLE_SOIL_TEMP = "enable_soil_temp"
 
 # ----- Defaults -----
+DEFAULT_WEATHER_ENTITY = "weather.openweathermap"
 DEFAULT_MOWED_TO_HEIGHT = 3.0       # inches
 DEFAULT_BASE_GROWTH_RATE = 0.15     # inches per day
 DEFAULT_ENABLE_SEASONAL = True
@@ -26,13 +27,9 @@ DEFAULT_ENABLE_SOIL_MOISTURE = True
 DEFAULT_ENABLE_SOIL_TEMP = True
 
 # ----- Update intervals (seconds) -----
-WEATHER_UPDATE_INTERVAL = 43_200    # 12 h fallback; overridden at runtime by max(2 h, mow_cycle/2)
-WEATHER_MIN_UPDATE_INTERVAL = 7_200  # 2 h — fastest OWM is ever polled
-SOIL_UPDATE_INTERVAL = 43_200       # 12 h
-HEIGHT_UPDATE_INTERVAL = 43_200     # 12 h
+SOIL_UPDATE_INTERVAL = 43_200       # 12 h; coordinator poll is 2 h but soil data only re-fetched after this interval
 
-# ----- API base URLs -----
-OWM_BASE_URL = "https://api.openweathermap.org/data/3.0/onecall"
+# ----- API base URLs (soil services only; weather data comes via HA weather entity) -----
 NSM_BASE_URL = "https://nationalsoilmoisture.com/test/data_api/"
 SCAN_STATIONS_URL = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1/stations"
 SCAN_DATA_URL = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1/data"
@@ -85,9 +82,6 @@ SERVICE_MARK_MOWED = "mark_mowed"
 # ----- Persistent store keys -----
 STORE_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 STORE_MOWED_TO_HEIGHT = "mowed_to_height"
-STORE_WEATHER_FETCHED_AT = "weather_fetched_at"
-STORE_WEATHER_DATA = "weather_data"
-STORE_HOURLY_FORECAST = "hourly_forecast"
 STORE_MOW_SESSION_ACTIVE = "mow_session_active"
 
 # ----- Sensor / attribute names -----

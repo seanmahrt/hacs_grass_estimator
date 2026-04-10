@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Grass Growth Predictor",
-        "description": "Connect to OpenWeatherMap and configure growth model parameters.",
+        "description": "Select your weather entity and configure growth model parameters.",
         "data": {
           "latitude": "Latitude",
           "longitude": "Longitude",
-          "owm_api_key": "OpenWeatherMap API Key",
+          "weather_entity_id": "Weather Entity",
           "mowed_to_height": "Mowed-To Height (inches)",
           "base_growth_rate": "Base Growth Rate (inches/day)",
           "enable_seasonal": "Enable Seasonal Factor",
@@ -17,15 +17,14 @@
           "enable_soil_temp": "Enable Soil Temperature Factor"
         },
         "data_description": {
-          "owm_api_key": "Free API key from openweathermap.org.",
+          "weather_entity_id": "Select the HA weather entity that provides forecast data (e.g. weather.openweathermap). This integration reads GDD, rainfall, and hourly humidity/precipitation data from it.",
           "mowed_to_height": "Height in inches the lawn was last cut to (default 3.0).",
           "base_growth_rate": "Maximum daily growth in inches under ideal conditions (default 0.15)."
         }
       }
     },
     "error": {
-      "cannot_connect": "Unable to reach OpenWeatherMap. Check your network connection.",
-      "invalid_api_key": "The OpenWeatherMap API key was rejected. Verify the key and try again."
+      "entity_not_found": "The selected weather entity was not found. Make sure the weather integration is set up and the entity exists."
     },
     "abort": {
       "already_configured": "A Grass Growth Predictor entry already exists for this location."
