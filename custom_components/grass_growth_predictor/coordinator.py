@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -15,24 +16,36 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    BINARY_SENSOR_DRY_MOW_WINDOW_SOON,
+    BINARY_SENSOR_GRASS_WET,
     BINARY_SENSOR_MOW_OVERDUE,
     BINARY_SENSOR_MOW_RECOMMENDED,
     CONF_BASE_GROWTH_RATE,
+    CONF_DRY_WINDOW_LOOKAHEAD_HOURS,
     CONF_ENABLE_GDD,
     CONF_ENABLE_RAIN,
     CONF_ENABLE_SEASONAL,
     CONF_ENABLE_SOIL_MOISTURE,
     CONF_ENABLE_SOIL_TEMP,
+    CONF_FORCE_MOW_GROWTH_THRESHOLD,
     CONF_MAX_DAYS_BETWEEN_MOWS,
     CONF_MAX_GROWTH_BETWEEN_MOWS,
     CONF_MIN_DAYS_BETWEEN_MOWS,
+    CONF_MOW_CYCLE_DURATION_HOURS,
     CONF_MOWED_TO_HEIGHT,
     CONF_OWM_API_KEY,
+    CONF_WET_HUMIDITY_PCT,
+    CONF_WET_RAIN_THRESHOLD_IN,
     DEFAULT_BASE_GROWTH_RATE,
+    DEFAULT_DRY_WINDOW_LOOKAHEAD_HOURS,
+    DEFAULT_FORCE_MOW_GROWTH_THRESHOLD,
     DEFAULT_MAX_DAYS_BETWEEN_MOWS,
     DEFAULT_MAX_GROWTH_BETWEEN_MOWS,
     DEFAULT_MIN_DAYS_BETWEEN_MOWS,
+    DEFAULT_MOW_CYCLE_DURATION_HOURS,
     DEFAULT_MOWED_TO_HEIGHT,
+    DEFAULT_WET_HUMIDITY_PCT,
+    DEFAULT_WET_RAIN_THRESHOLD_IN,
     DOMAIN,
     GDD_BASE_TEMP_F,
     HEIGHT_UPDATE_INTERVAL,
@@ -44,9 +57,11 @@ from .const import (
     SCAN_DATA_URL,
     SCAN_STATIONS_URL,
     SEASON_FACTORS,
+    SENSOR_NEXT_DRY_MOW_WINDOW,
     SOIL_UPDATE_INTERVAL,
     STORAGE_KEY,
     STORAGE_VERSION,
+    STORE_HOURLY_FORECAST,
     STORE_LAST_MOW_TIMESTAMP,
     STORE_MOW_SESSION_ACTIVE,
     STORE_MOWED_TO_HEIGHT,
@@ -69,6 +84,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Per-source cache
         self._weather_data: dict[str, Any] | None = None
         self._weather_fetched_at: datetime | None = None
+        self._hourly_forecast: list[dict[str, Any]] = []  # reduced hourly slots from OWM
 
         self._soil_moisture_data: dict[str, Any] | None = None
         self._soil_moisture_fetched_at: datetime | None = None
@@ -138,6 +154,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raw_data = self._stored_data.get(STORE_WEATHER_DATA)
             if isinstance(raw_data, dict):
                 self._weather_data = raw_data
+            raw_hourly = self._stored_data.get(STORE_HOURLY_FORECAST)
+            if isinstance(raw_hourly, list):
+                self._hourly_forecast = raw_hourly
 
     async def async_mark_mowed(self, mowed_to_height: float | None = None) -> None:
         """Record a mowing event; persist and refresh immediately."""
@@ -226,7 +245,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "lon": lon,
             "appid": api_key,
             "units": "imperial",
-            "exclude": "current,minutely,hourly,alerts",
+            "exclude": "current,minutely,alerts",
         }
 
         try:
@@ -246,8 +265,25 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._weather_data = {"gdd": gdd, "rainfall": rain_inches}
             self._weather_fetched_at = dt_util.now()
+
+            # Parse hourly forecast — keep only fields needed for wet/dry scheduling.
+            # OWM hourly rain field is {"1h": mm} or absent; convert to inches.
+            hourly_raw = payload.get("hourly") or []
+            self._hourly_forecast = [
+                {
+                    "dt": int(slot.get("dt", 0)),
+                    "rain_1h": float(
+                        (slot.get("rain") or {}).get("1h", 0.0)
+                    ) * 0.03937,  # mm → inches
+                    "humidity": int(slot.get("humidity", 0)),
+                    "pop": float(slot.get("pop", 0.0)),
+                }
+                for slot in hourly_raw
+            ]
+
             self._stored_data[STORE_WEATHER_FETCHED_AT] = self._weather_fetched_at.isoformat()
             self._stored_data[STORE_WEATHER_DATA] = self._weather_data
+            self._stored_data[STORE_HOURLY_FORECAST] = self._hourly_forecast
             await self._store.async_save(self._stored_data)
 
         except Exception as err:  # noqa: BLE001
@@ -366,6 +402,11 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         min_days = float(cfg.get(CONF_MIN_DAYS_BETWEEN_MOWS, DEFAULT_MIN_DAYS_BETWEEN_MOWS))
         max_days = float(cfg.get(CONF_MAX_DAYS_BETWEEN_MOWS, DEFAULT_MAX_DAYS_BETWEEN_MOWS))
         max_growth = float(cfg.get(CONF_MAX_GROWTH_BETWEEN_MOWS, DEFAULT_MAX_GROWTH_BETWEEN_MOWS))
+        force_growth = float(cfg.get(CONF_FORCE_MOW_GROWTH_THRESHOLD, DEFAULT_FORCE_MOW_GROWTH_THRESHOLD))
+        mow_cycle_h = float(cfg.get(CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS))
+        wet_rain_in = float(cfg.get(CONF_WET_RAIN_THRESHOLD_IN, DEFAULT_WET_RAIN_THRESHOLD_IN))
+        wet_humidity = float(cfg.get(CONF_WET_HUMIDITY_PCT, DEFAULT_WET_HUMIDITY_PCT))
+        lookahead_h = int(cfg.get(CONF_DRY_WINDOW_LOOKAHEAD_HOURS, DEFAULT_DRY_WINDOW_LOOKAHEAD_HOURS))
 
         weather = self._weather_data or {"gdd": 10.0, "rainfall": 0.0}
         gdd = float(weather.get("gdd", 10.0))
@@ -416,13 +457,43 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         current_height = self.mowed_to_height + days_since_mow * daily_rate
         growth_since_mow = max(0.0, current_height - self.mowed_to_height)
 
-        # mow_overdue: hard upper bound — always ON at max_days regardless of height
+        # --- Wet grass detection ---
+        # Hourly[0] represents the current/nearest hour from the cached forecast.
+        current_humidity = (
+            float(self._hourly_forecast[0].get("humidity", 0))
+            if self._hourly_forecast
+            else 0.0
+        )
+        grass_wet = (rainfall >= wet_rain_in) or (current_humidity >= wet_humidity)
+
+        # --- Dry mow window ---
+        hourly_window = self._hourly_forecast[:lookahead_h]
+        dry_window_epoch = _find_dry_mow_window(hourly_window, mow_cycle_h, wet_humidity)
+        dry_window_dt: datetime | None = (
+            dt_util.utc_from_timestamp(dry_window_epoch)
+            if dry_window_epoch is not None
+            else None
+        )
+        dry_window_soon = dry_window_dt is not None
+
+        # --- Mowing thresholds ---
+        # mow_overdue: hard upper bound — always ON at max_days, ignores wet state
         mow_overdue = last_mow is None or days_since_mow >= max_days
-        # mow_recommended: growth-based trigger between the day bounds, or escalate to overdue
+        # force_mow: grown too much — mow regardless of wet state
+        force_mow = growth_since_mow >= force_growth
+        # normal_trigger: grown enough and past minimum days — prefer a dry window
+        days_ok = last_mow is None or days_since_mow >= min_days
+        normal_trigger = days_ok and growth_since_mow >= max_growth
+
+        # mow_recommended logic:
+        #   1. overdue or overgrown → always mow
+        #   2. normal trigger + dry now → mow
+        #   3. normal trigger + wet + no dry window coming → mow anyway (don't delay indefinitely)
         mow_recommended = (
-            last_mow is None
-            or mow_overdue
-            or (days_since_mow >= min_days and growth_since_mow >= max_growth)
+            mow_overdue
+            or force_mow
+            or (normal_trigger and not grass_wet)
+            or (normal_trigger and grass_wet and not dry_window_soon)
         )
 
         return {
@@ -437,6 +508,10 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soil_temperature": round(soil_temp, 1),
             "season_factor": round(season_factor, 3),
             "enabled_multipliers": enabled,
+            "current_humidity": round(current_humidity, 1),
+            SENSOR_NEXT_DRY_MOW_WINDOW: dry_window_dt,
+            BINARY_SENSOR_GRASS_WET: grass_wet,
+            BINARY_SENSOR_DRY_MOW_WINDOW_SOON: dry_window_soon,
             BINARY_SENSOR_MOW_RECOMMENDED: mow_recommended,
             BINARY_SENSOR_MOW_OVERDUE: mow_overdue,
         }
@@ -445,6 +520,43 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 # ------------------------------------------------------------------
 # Pure growth-factor functions
 # ------------------------------------------------------------------
+
+# Dry-window slot thresholds (not user-configurable — keep UI simple)
+_DRY_SLOT_RAIN_IN = 0.04   # ≈ 1 mm/h; above this a slot is considered rainy
+_DRY_SLOT_POP_MAX = 0.30   # 30 % precipitation probability ceiling for a dry slot
+
+
+def _find_dry_mow_window(
+    hourly: list[dict[str, Any]],
+    needed_hours: float,
+    wet_humidity_pct: float,
+) -> int | None:
+    """Return epoch timestamp of the first contiguous dry window long enough to mow.
+
+    A slot is 'dry' when:
+    - rain_1h < _DRY_SLOT_RAIN_IN inches
+    - pop     < _DRY_SLOT_POP_MAX
+    - humidity < wet_humidity_pct
+    """
+    needed = max(1, math.ceil(needed_hours))
+    run = 0
+    window_start: int | None = None
+    for slot in hourly:
+        if (
+            float(slot.get("rain_1h", 0.0)) <= _DRY_SLOT_RAIN_IN
+            and float(slot.get("pop", 0.0)) <= _DRY_SLOT_POP_MAX
+            and int(slot.get("humidity", 100)) < wet_humidity_pct
+        ):
+            if run == 0:
+                window_start = slot.get("dt")
+            run += 1
+            if run >= needed:
+                return window_start
+        else:
+            run = 0
+            window_start = None
+    return None
+
 
 def _gdd_factor(gdd: float) -> float:
     """Scale 0.05–2.0 based on growing degree days relative to optimal."""

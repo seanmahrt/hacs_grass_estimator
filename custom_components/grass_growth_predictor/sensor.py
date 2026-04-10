@@ -25,6 +25,7 @@ from .const import (
     SENSOR_DAYS_SINCE_MOW,
     SENSOR_GDD,
     SENSOR_GROWTH_SINCE_MOW,
+    SENSOR_NEXT_DRY_MOW_WINDOW,
     SENSOR_RAINFALL,
     SENSOR_SEASON_FACTOR,
     SENSOR_SOIL_MOISTURE,
@@ -45,6 +46,7 @@ async def async_setup_entry(
             DailyGrowthRateSensor(coordinator, entry),
             DaysSinceMowSensor(coordinator, entry),
             GrowthSinceMowSensor(coordinator, entry),
+            NextDryMowWindowSensor(coordinator, entry),
             GrowingDegreeDaysSensor(coordinator, entry),
             RainfallSensor(coordinator, entry),
             SoilMoistureSensor(coordinator, entry),
@@ -147,6 +149,39 @@ class GrowthSinceMowSensor(_GrassBaseSensor):
     _attr_native_unit_of_measurement = "in"
     _attr_icon = "mdi:grass"
     _data_key = SENSOR_GROWTH_SINCE_MOW
+
+
+class NextDryMowWindowSensor(CoordinatorEntity[GrassGrowthCoordinator], SensorEntity):
+    """Timestamp sensor reporting the start of the next suitable dry mow window.
+
+    Returns 'unknown' when no dry window is found within the lookahead period.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Next Dry Mow Window"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:weather-sunny-off"
+
+    def __init__(self, coordinator: GrassGrowthCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{SENSOR_NEXT_DRY_MOW_WINDOW}"
+
+    @property
+    def native_value(self):
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get(SENSOR_NEXT_DRY_MOW_WINDOW)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name="Grass Growth Predictor",
+            manufacturer="Custom Integration",
+            model="Grass Growth Predictor v1",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
 
 class GrowingDegreeDaysSensor(_GrassBaseSensor):
