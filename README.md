@@ -75,7 +75,171 @@ All options except location and API key can be changed later via **Configure** o
 
 ---
 
-## Entities
+## How to Use
+
+This section describes how each input and output entity is intended to be connected in a real Home Assistant setup.
+
+### Inputs — tell the integration what happened
+
+| Entity / Service | When to call it | How |
+|---|---|---|
+| `button.mark_mowed` | Mowed manually outside of an automated session | Press the button in the UI, or trigger it from an automation/script |
+| `button.mow_complete` | Automated mower finished a dispatched session | Call `button.press` targeting this button (e.g. when your mower docks or reports idle) |
+| `grass_growth_predictor.mark_mowed` | Any mow event — also accepts an optional height override | Call the service from an automation, script, or the Developer Tools → Services panel |
+| `switch.mow_session_active` turned **ON** | You have decided to start a mow session | Turn on via an automation or the UI; signals the mower is running so the integration tracks the active session |
+| `switch.mow_session_active` turned **OFF** | Cancel a session _without_ recording a mow | Turn off via an automation or the UI; resets session state but does not reset the growth timer |
+
+### Outputs — react to what the integration tells you
+
+| Entity | Meaning | Typical automation response |
+|---|---|---|
+| `binary_sensor.mow_recommended` | Conditions are right to mow (growth threshold met + either dry or no dry window coming) | Send a push notification; turn on a dashboard indicator; trigger a mower dispatch |
+| `binary_sensor.mow_overdue` | Max days exceeded regardless of growth or wet state | Escalate: force-start the mower and send an urgent alert |
+| `binary_sensor.grass_wet` | Current conditions are too wet to mow | Suppress mow-start automations; optionally notify |
+| `binary_sensor.dry_mow_window_soon` | A dry window long enough for a full mow cycle is coming | Schedule the mower to start at `sensor.next_dry_mow_window` |
+| `sensor.next_dry_mow_window` | Timestamp of the next suitable dry window | Use in a `time` trigger or `template` trigger to start the mower at precisely the right time |
+| `sensor.current_grass_height` | Estimated current height in inches | Display on a dashboard; use in a condition to guard other automations |
+| `sensor.growth_since_mow` | Inches of growth since the last mow | Display on a dashboard; useful for fine-tuning threshold options |
+
+### Wiring guide — recommended setup
+
+#### 1. Manual-only household (no robot mower)
+
+Connect your physical mow button (e.g. an `input_button` helper) to the `mark_mowed` service, and put `binary_sensor.mow_recommended` on a dashboard card so you know when it's time to mow.
+
+```yaml
+automation:
+  - alias: "Record manual mow"
+    trigger:
+      - platform: state
+        entity_id: input_button.mow_button
+        to: ~
+    action:
+      - service: grass_growth_predictor.mark_mowed
+        data:
+          mowed_to_height: 3.0
+```
+
+#### 2. Robot mower — notify and wait for dry conditions
+
+The mower is dispatched only when `mow_recommended` is ON and the grass is currently dry. If the grass is wet, the integration will still set `mow_recommended` once no dry window is in the forecast — so the mower is never blocked indefinitely.
+
+```yaml
+automation:
+  - alias: "Dispatch robot mower when recommended and dry"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.mow_recommended
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: binary_sensor.grass_wet
+        state: "off"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.mow_session_active
+      # Replace with your mower's actual start service:
+      - service: vacuum.start
+        target:
+          entity_id: vacuum.lawn_mower
+
+  - alias: "Record mow when robot mower docks"
+    trigger:
+      - platform: state
+        entity_id: sensor.lawn_mower_status
+        to: "docked"
+    condition:
+      - condition: state
+        entity_id: switch.mow_session_active
+        state: "on"
+    action:
+      - service: button.press
+        target:
+          entity_id: button.mow_complete
+```
+
+#### 3. Robot mower — schedule at the next dry window
+
+Use `sensor.next_dry_mow_window` to kick off the mower at the precise start of the next suitable dry period.
+
+```yaml
+automation:
+  - alias: "Start mower at next dry window"
+    trigger:
+      - platform: template
+        value_template: >
+          {{ now() >= states('sensor.next_dry_mow_window') | as_datetime
+             and is_state('binary_sensor.mow_recommended', 'on') }}
+    condition:
+      - condition: state
+        entity_id: binary_sensor.grass_wet
+        state: "off"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.mow_session_active
+      - service: vacuum.start
+        target:
+          entity_id: vacuum.lawn_mower
+```
+
+#### 4. Mow-overdue escalation
+
+When the hard upper day limit is reached, override any wet-grass delay and alert the household.
+
+```yaml
+automation:
+  - alias: "Escalate when mow is overdue"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.mow_overdue
+        to: "on"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "Mow overdue!"
+          message: >
+            Lawn has not been mowed in over
+            {{ states('sensor.days_since_last_mow') | round(0) }} days.
+            Starting mower now.
+      - service: switch.turn_on
+        target:
+          entity_id: switch.mow_session_active
+      - service: vacuum.start
+        target:
+          entity_id: vacuum.lawn_mower
+```
+
+#### 5. Dashboard card
+
+A simple entities card to keep all relevant sensors visible at a glance.
+
+```yaml
+type: entities
+title: Lawn Status
+entities:
+  - entity: sensor.current_grass_height
+    name: Current Height
+  - entity: sensor.growth_since_mow
+    name: Growth Since Mow
+  - entity: sensor.days_since_last_mow
+    name: Days Since Mow
+  - entity: binary_sensor.mow_recommended
+    name: Mow Recommended
+  - entity: binary_sensor.mow_overdue
+    name: Mow Overdue
+  - entity: binary_sensor.grass_wet
+    name: Grass Wet
+  - entity: binary_sensor.dry_mow_window_soon
+    name: Dry Window Soon
+  - entity: sensor.next_dry_mow_window
+    name: Next Dry Window
+  - entity: switch.mow_session_active
+    name: Mow Session Active
+```
+
+
 
 All entities appear under the **Grass Growth Predictor** device.
 
