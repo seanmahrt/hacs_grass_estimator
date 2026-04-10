@@ -558,27 +558,36 @@ def _find_dry_mow_window(
     """Return epoch timestamp of the first contiguous dry window long enough to mow.
 
     A slot is 'dry' when:
-    - rain_1h < _DRY_SLOT_RAIN_IN inches
-    - pop     < _DRY_SLOT_POP_MAX
+    - rain_1h <= _DRY_SLOT_RAIN_IN inches
+    - pop     <= _DRY_SLOT_POP_MAX
     - humidity < wet_humidity_pct
+
+    Window length is validated against actual slot timestamps so the result is
+    correct regardless of the forecast interval (1 h, 3 h, etc.) used by the
+    configured weather entity.
     """
-    needed = max(1, math.ceil(needed_hours))
-    run = 0
+    needed_secs = needed_hours * 3600.0
     window_start: int | None = None
-    for slot in hourly:
+
+    for i, slot in enumerate(hourly):
         if (
             float(slot.get("rain_1h", 0.0)) <= _DRY_SLOT_RAIN_IN
             and float(slot.get("pop", 0.0)) <= _DRY_SLOT_POP_MAX
             and int(slot.get("humidity", 100)) < wet_humidity_pct
         ):
-            if run == 0:
-                window_start = slot.get("dt")
-            run += 1
-            if run >= needed:
+            slot_dt = int(slot.get("dt") or 0)
+            if window_start is None:
+                window_start = slot_dt
+            # End of this slot's coverage: the next slot's start, or +1 h if last.
+            if i + 1 < len(hourly):
+                next_dt = int(hourly[i + 1].get("dt") or (slot_dt + 3600))
+            else:
+                next_dt = slot_dt + 3600
+            if (next_dt - window_start) >= needed_secs:
                 return window_start
         else:
-            run = 0
             window_start = None
+
     return None
 
 
