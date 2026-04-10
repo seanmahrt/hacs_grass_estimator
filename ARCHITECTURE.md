@@ -20,6 +20,7 @@
   - [Soil Moisture Factor](#soil-moisture-factor)
   - [Soil Temperature Factor](#soil-temperature-factor)
 - [Mow Scheduling Logic](#mow-scheduling-logic)
+  - [Evaporation Model](#evaporation-model)
   - [grass\_wet](#binary_sensorgrassw_et)
   - [mow\_not\_advised](#binary_sensormownot_advised)
   - [dry\_mow\_window\_soon / next\_dry\_mow\_window](#binary_sensordry_mow_window_soon--sensornext_dry_mow_window)
@@ -63,8 +64,8 @@ All sensors share the same **Grass Growth Predictor** device and update together
 |---|---|---|
 | `binary_sensor.mow_recommended` | — | `ON` per wet-grass scheduling logic: always ON when overdue or force threshold exceeded; ON when normal trigger + dry; ON when normal trigger + wet + no dry window in lookahead |
 | `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height or wet state |
-| `binary_sensor.grass_wet` | `moisture` | `ON` when rainfall ≥ wet rain threshold OR current humidity ≥ wet humidity threshold |
-| `binary_sensor.mow_not_advised` | — | `ON` when currently wet OR any hourly slot within `mow_cycle_duration_hours` hours fails the dry test (rain > 0.04 in, pop > 30%, or humidity ≥ threshold). Single go/no-go indicator for manual mowing. |
+| `binary_sensor.grass_wet` | `moisture` | `ON` when estimated current moisture (today's rainfall minus evaporated amount) ≥ wet rain threshold OR current humidity ≥ wet humidity threshold |
+| `binary_sensor.mow_not_advised` | — | `ON` when currently wet OR any hourly slot within `mow_cycle_duration_hours` hours is problematic after projecting moisture forward through evaporation. Single go/no-go indicator for manual mowing. |
 | `binary_sensor.dry_mow_window_soon` | — | `ON` when a contiguous dry window ≥ `mow_cycle_duration_hours` exists within the hourly forecast lookahead |
 
 ### Switch
@@ -331,13 +332,52 @@ temp > 95         →  0.45                           (peak heat stress)
 
 All scheduling binary sensors are recomputed on every coordinator poll (every 2 hours) from the latest hourly forecast and current state.
 
+### Evaporation Model
+
+Before evaluating any wet/dry state, the coordinator estimates how much of today's rainfall has already evaporated from the grass surface using a two-term simplified Penman model.
+
+```
+evaporation_rate (in/h) = radiation_term + aerodynamic_term
+
+radiation_term  = 0.04 × solar_fraction × max(0, temp_°C / 25)
+aerodynamic_term = 0.02 × wind_factor × vpd
+
+solar_fraction = max(0, 1 − cloud_coverage / 100)
+wind_factor    = 1.0 + min(wind_mph, 20) / 10         [1.0 – 3.0]
+vpd            = max(0, 1 − humidity / 100) × max(0, temp_°C / 30)
+
+rate is capped at 0.08 in/h (peak conditions ceiling)
+```
+
+**Calibration targets:**
+
+| Conditions | Rate |
+|---|---|
+| Clear sky, 75 °F, 15 mph wind, 40% RH | ≈ 0.060 in/h |
+| 50% clouds, 65 °F, 10 mph wind, 60% RH | ≈ 0.025 in/h |
+| Overcast, 50 °F, calm, 85% RH | ≈ 0.001 in/h |
+
+Wind speed is converted to mph from whatever unit the weather entity reports (`km/h`, `m/s`, or `mph`).
+
+**Current moisture estimate (`current_moisture_in`):**
+
+```
+hours_since_dawn   = max(0, current_local_hour − 6.0)
+evaporated_today   = evaporation_rate(current_slot_conditions) × hours_since_dawn
+current_moisture   = max(0, today_rainfall_in − evaporated_today)
+```
+
+This is a conservative lower bound — it assumes drying conditions have been constant since 06:00 local time. `current_moisture` is also exposed as the `current_moisture` attribute on `sensor.current_grass_height`.
+
+---
+
 ### `binary_sensor.grass_wet`
 
 `ON` when **either** condition is true:
 
 | Condition | Source | Configurable threshold |
 |---|---|---|
-| Today's accumulated rainfall ≥ threshold | Daily forecast `precipitation` field | `wet_rain_threshold_in` (default 0.1 in) |
+| `current_moisture_in` ≥ threshold | Today's rainfall minus evaporated amount (see above) | `wet_rain_threshold_in` (default 0.1 in) |
 | Current humidity ≥ threshold | Most recent hourly slot `humidity`; falls back to live weather entity `humidity` attribute if no hourly slots available | `wet_humidity_pct` (default 85%) |
 
 ---
@@ -346,26 +386,32 @@ All scheduling binary sensors are recomputed on every coordinator poll (every 2 
 
 Single go/no-go indicator for **manual mowing right now**.
 
-`ON` when the grass is **currently wet** (see `grass_wet` above) **OR** any hourly forecast slot within the next `mow_cycle_duration_hours` hours fails the dry test:
+`ON` when the grass is **currently wet** (see `grass_wet` above) **OR** any hourly slot within the next `mow_cycle_duration_hours` hours is problematic after projecting moisture forward:
+
+For each slot in the cycle window, moisture is updated:
+```
+moisture = max(0, moisture − evaporation_rate(slot) × slot_duration_h) + slot.rain_1h
+```
+A slot triggers `mow_not_advised` if any of the following are true:
 
 | Per-slot criterion | Threshold |
 |---|---|
+| Projected moisture after this slot | > `_DRY_SLOT_RAIN_IN` (0.04 in) |
 | Rain per hour | > 0.04 in (~1 mm/h) |
 | Precipitation probability | > 30% |
 | Relative humidity | ≥ `wet_humidity_pct` |
-
-The lookahead window is `ceil(mow_cycle_duration_hours)` slots — the same duration used to find a dry window. It answers: *if you start mowing now, will conditions stay tolerable long enough to finish a full cycle?*
 
 ---
 
 ### `binary_sensor.dry_mow_window_soon` / `sensor.next_dry_mow_window`
 
-Scans up to `dry_window_lookahead_hours` of the hourly forecast for a contiguous block of dry slots that covers an entire mow cycle.
+Scans up to `dry_window_lookahead_hours` of the hourly forecast for a contiguous block of dry slots that covers an entire mow cycle. Moisture is projected forward through each slot (same evaporation formula as above).
 
-**Per-slot dry criteria** (all three must be satisfied):
+**Per-slot dry criteria** (all four must be satisfied):
 
-| Criterion | Internal threshold | Configurable? |
+| Criterion | Threshold | Configurable? |
 |---|---|---|
+| Projected surface moisture | ≤ `wet_rain_threshold_in` | Yes (default 0.1 in) |
 | Rain per hour | ≤ 0.04 in (~1 mm/h) | No |
 | Precipitation probability | ≤ 30% | No |
 | Relative humidity | < `wet_humidity_pct` | Yes (default 85%) |
@@ -373,9 +419,8 @@ Scans up to `dry_window_lookahead_hours` of the hourly forecast for a contiguous
 **Window duration check** — validated against real timestamps, not slot count:
 
 ```
-window_duration = next_slot.dt − first_dry_slot.dt
-                 (last slot uses its own dt + 3600 s as its end)
-window is accepted when window_duration ≥ mow_cycle_duration_hours × 3600 s
+slot_duration = next_slot.dt − slot.dt  (or +3600 s for the last slot)
+window is accepted when (last_slot.end_dt − first_dry_slot.dt) ≥ mow_cycle_duration_hours × 3600 s
 ```
 
 This is correct regardless of the forecast interval (1-hour, 3-hour, etc.) provided by the configured weather entity.
