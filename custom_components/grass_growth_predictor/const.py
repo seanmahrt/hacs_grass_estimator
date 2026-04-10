@@ -27,7 +27,10 @@ DEFAULT_ENABLE_SOIL_MOISTURE = True
 DEFAULT_ENABLE_SOIL_TEMP = True
 
 # ----- Update intervals (seconds) -----
-SOIL_UPDATE_INTERVAL = 43_200       # 12 h; coordinator poll is 2 h but soil data only re-fetched after this interval
+# WEATHER_UPDATE_INTERVAL is not a constant — it is computed at runtime as
+# max(3600, mow_cycle_duration_hours / 2 * 3600) so the poll rate scales with
+# how time-sensitive the mow-window detection needs to be.
+SOIL_UPDATE_INTERVAL = 43_200       # 12 h; independent of mow cycle
 
 # ----- API base URLs (soil services only; weather data comes via HA weather entity) -----
 NSM_BASE_URL = "https://nationalsoilmoisture.com/test/data_api/"

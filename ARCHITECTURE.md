@@ -78,8 +78,8 @@ All sensors share the same **Grass Growth Predictor** device and update together
 
 | Entity | Description |
 |---|---|
-| `button.mark_mowed` | Records an ad-hoc manual mow; no session interaction. |
-| `button.mow_complete` | Records a completed automated mow *and* turns off `switch.mow_session_active`. |
+| `button.mark_mowed` | Records an **ad-hoc manual mow**. Resets the growth timer, stores the cut height, and clears any active mow session so the switch is never left ON accidentally. Use this when you mow yourself outside of the automated workflow. |
+| `button.mow_complete` | Records a **completed automated mow** and explicitly ends the active session. Use this at the end of the automated mowing workflow (e.g. the Node-RED flow). Both buttons now clear the session — the distinction is one of intent and workflow clarity. |
 
 ---
 
@@ -359,15 +359,15 @@ rate is capped at 0.08 in/h (peak conditions ceiling)
 
 Wind speed is converted to mph from whatever unit the weather entity reports (`km/h`, `m/s`, or `mph`).
 
-**Current moisture estimate (`current_moisture_in`):**
+**Current moisture estimate (`current_moisture_in`) — uses past rainfall only:**
 
 ```
 hours_since_dawn   = max(0, current_local_hour − 6.0)
 evaporated_today   = evaporation_rate(current_slot_conditions) × hours_since_dawn
-current_moisture   = max(0, today_rainfall_in − evaporated_today)
+current_moisture   = max(0, past_rainfall_in − evaporated_today)
 ```
 
-This is a conservative lower bound — it assumes drying conditions have been constant since 06:00 local time. `current_moisture` is also exposed as the `current_moisture` attribute on `sensor.current_grass_height`.
+`past_rainfall_in` is the sum of `precipitation` from hourly forecast slots whose `datetime` is in the past.  This avoids inflating surface moisture with tonight's forecast rain — only rain that has already fallen is counted.  `sensor.rainfall` still reports the full-day forecast total (used by the growth-rate `rain_factor`); the `past_rainfall_in` and `current_surface_moisture_in` values are exposed as attributes on that sensor.
 
 ---
 
@@ -377,7 +377,7 @@ This is a conservative lower bound — it assumes drying conditions have been co
 
 | Condition | Source | Configurable threshold |
 |---|---|---|
-| `current_moisture_in` ≥ threshold | Today's rainfall minus evaporated amount (see above) | `wet_rain_threshold_in` (default 0.1 in) |
+| `current_moisture_in` ≥ threshold | Past rainfall (summed from hourly slots whose datetime ≤ now) minus evaporated amount — **not** the full-day forecast total | `wet_rain_threshold_in` (default 0.1 in) |
 | Current humidity ≥ threshold | Most recent hourly slot `humidity`; falls back to live weather entity `humidity` attribute if no hourly slots available | `wet_humidity_pct` (default 85%) |
 
 ---
@@ -461,11 +461,11 @@ mow_recommended =
 
 | Data source | Fetch interval | Notes |
 |---|---|---|
-| HA weather entity (daily forecast: GDD + rainfall) | Every coordinator poll (2 h) | Reads from HA state via `weather.get_forecasts`. The weather entity manages its own OWM fetch schedule. |
-| HA weather entity (hourly forecast: humidity + rain per hour) | Every coordinator poll (2 h) | Same call; used for wet-grass and mow-not-advised logic. |
+| HA weather entity (daily forecast: GDD + rainfall) | 1 hour minimum (`WEATHER_UPDATE_INTERVAL`) | TTL-guarded: `weather.get_forecasts` is only called when cached data is ≥ 1 hour old. Refresh calls triggered by `mark_mowed` or `mow_complete` reuse the cached weather data if it is still fresh, preventing runaway API usage. |
+| HA weather entity (hourly forecast: humidity + rain per hour) | 1 hour minimum | Fetched in the same guarded call as the daily forecast. Past hourly slots (slots whose datetime ≤ now) are summed to `past_rainfall_in` for wet-grass detection; future slots are used only for dry-window scheduling. |
 | National Soil Moisture Network (soil moisture %) | 12 hours | In-memory cache only |
 | USDA SCAN (2-inch soil temperature) | 12 hours | Station triplet resolved once, then cached in memory |
-| Coordinator poll (height calculation + all sensor updates) | 2 hours | Wakes every 2 h; soil data only re-fetched when their TTL has elapsed |
+| Coordinator poll (height calculation + all sensor updates) | 2 hours | Wakes every 2 h; weather data only re-fetched when 1 h TTL has elapsed; soil data only when 12 h TTL has elapsed |
 
 ---
 

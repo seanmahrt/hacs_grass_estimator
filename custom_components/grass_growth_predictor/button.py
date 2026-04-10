@@ -25,7 +25,15 @@ async def async_setup_entry(
 
 
 class MarkMowedButton(CoordinatorEntity[GrassGrowthCoordinator], ButtonEntity):
-    """Button that records a mowing event using the configured cut height."""
+    """Button that records a manual mowing event using the configured cut height.
+
+    Use this when you mow the lawn yourself (not through the automated session flow).
+    Resets the growth timer, stores the cut height, and clears any active mow session
+    so the 'Mow Session Active' switch is never left ON accidentally.
+
+    For the end of an automated session, use 'Mow Complete' instead — it does the
+    same thing but the intent is explicit.
+    """
 
     _attr_has_entity_name = True
     _attr_name = "Mark Mowed"
@@ -53,10 +61,13 @@ class MarkMowedButton(CoordinatorEntity[GrassGrowthCoordinator], ButtonEntity):
 class MowCompleteButton(CoordinatorEntity[GrassGrowthCoordinator], ButtonEntity):
     """Button that records a completed automated mow and ends the active mow session.
 
-    Use this at the end of the automated mowing workflow. It records the mow
-    (resetting the grass growth timer) and deactivates the 'Mow Session Active'
-    switch. The manual 'Mark Mowed' button is still available for ad-hoc mowing
-    that doesn't go through the automated session flow.
+    Use this at the end of the automated mowing workflow (e.g. in the node-red flow
+    or automation that runs the mower).  It resets the growth timer, stores the cut
+    height, and explicitly deactivates the 'Mow Session Active' switch.
+
+    For ad-hoc manual mowing outside of the automated session flow, use 'Mark Mowed'.
+    Both buttons now clear the session, so either is safe to press regardless of
+    session state — the distinction is only one of intent and workflow clarity.
     """
 
     _attr_has_entity_name = True

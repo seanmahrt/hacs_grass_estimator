@@ -194,12 +194,29 @@ class GrowingDegreeDaysSensor(_GrassBaseSensor):
 
 
 class RainfallSensor(_GrassBaseSensor):
-    """Sensor reporting today's rainfall used in the growth model."""
+    """Sensor reporting today's total forecast rainfall used in the growth rate model.
+
+    Shows the full-day forecast total from the daily weather forecast.  This is what
+    drives the rain_factor growth multiplier (more rain → faster growth today).
+
+    Attribute 'past_rainfall_in' shows only the rain that has already fallen today
+    (summed from past hourly forecast slots) — this is the value used for wet-grass
+    and Mow Not Advised detection so that a forecast for tonight does not incorrectly
+    mark the grass as wet right now.
+    """
 
     _attr_name = "Rainfall"
     _attr_native_unit_of_measurement = "in"
     _attr_icon = "mdi:weather-rainy"
     _data_key = SENSOR_RAINFALL
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        return {
+            "past_rainfall_in": data.get("past_rainfall"),
+            "current_surface_moisture_in": data.get("current_moisture"),
+        }
 
 
 class SoilMoistureSensor(_GrassBaseSensor):

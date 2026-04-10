@@ -59,6 +59,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the coordinator when options change."""
     coordinator: GrassGrowthCoordinator = hass.data[DOMAIN][entry.entry_id]
+    new_interval = coordinator._compute_poll_interval()
+    if coordinator.update_interval != new_interval:
+        _LOGGER.info(
+            "Mow cycle duration changed; updating poll interval to %s",
+            new_interval,
+        )
+        coordinator.update_interval = new_interval
     await coordinator.async_refresh()
 
 

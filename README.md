@@ -322,7 +322,7 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 | `sensor.growth_since_mow` | in | Estimated grass growth above the mowed-to height since the last mow. Compared against the normal growth trigger and force-mow threshold to drive `mow_recommended`. |
 | `sensor.next_dry_mow_window` | timestamp | Start time of the next forecasted dry window long enough to complete a full mow cycle, or `unknown` if none found in the lookahead period. |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
-| `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
+| `sensor.rainfall` | in | Today's total forecast precipitation from the weather entity (full-day total; drives the rain growth multiplier). Attributes expose `past_rainfall_in` (rain already fallen, used for wet-grass detection) and `current_surface_moisture_in` |
 | `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
 | `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
 | `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
@@ -333,7 +333,7 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 |---|---|---|
 | `binary_sensor.mow_recommended` | — | `ON` according to the wet-grass scheduling logic (see **Wet-Grass Scheduling** section below) |
 | `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height or wet state |
-| `binary_sensor.grass_wet` | `moisture` | `ON` when today's rainfall ≥ wet rain threshold **or** current humidity ≥ wet humidity threshold |
+| `binary_sensor.grass_wet` | `moisture` | `ON` when past rainfall (rain already fallen today) minus estimated evaporation ≥ wet rain threshold **or** current humidity ≥ wet humidity threshold |
 | `binary_sensor.mow_not_advised` | — | `ON` when the grass is currently wet **or** any hourly forecast slot within the next `mow_cycle_duration_hours` hours is rainy or humid. Use this as a single go/no-go indicator when mowing manually. |
 | `binary_sensor.dry_mow_window_soon` | — | `ON` when a dry window long enough to complete a full mow cycle exists within the lookahead period |
 
@@ -502,10 +502,10 @@ The last condition ensures the mower still runs when the grass has grown enough 
 
 | Condition | Source |
 |---|---|
-| `rainfall ≥ wet_rain_threshold_in` | Today's accumulated precipitation from the HA weather entity daily forecast (unit-aware: mm → in) |
+| `past_rainfall_in − evaporated ≥ wet_rain_threshold_in` | Sum of precipitation from hourly slots whose datetime is in the past (**not** the full-day forecast total, which would include tonight's forecast rain). Evaporation since dawn is subtracted using current temperature/wind/cloud/humidity conditions. |
 | `current_humidity ≥ wet_humidity_pct` | Humidity from the most recent HA weather entity hourly forecast slot; falls back to the live `humidity` attribute if no hourly slots are available |
 
-Either condition alone makes `binary_sensor.grass_wet` turn `ON`.
+Using past-only rainfall means a forecast of heavy rain tonight will not mark the grass as wet at 9 AM.
 
 ### Dry-window detection
 

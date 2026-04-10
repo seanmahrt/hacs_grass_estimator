@@ -91,6 +91,11 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._soil_temp_data: dict[str, Any] | None = None
         self._soil_temp_fetched_at: datetime | None = None
 
+        self._weather_fetched_at: datetime | None = None
+        # Rainfall that has actually fallen so far today (summed from past hourly slots).
+        # Separate from the full daily forecast total used for the growth-rate rain factor.
+        self._past_rainfall_in: float = 0.0
+
         # Nearest SCAN station (resolved once, then cached)
         self._scan_station_triplet: str | None = None
         self._scan_station_resolved: bool = False
@@ -99,9 +104,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            # Poll every 2 h — sufficient for mow-decision sensors; weather data
-            # comes from the HA weather entity (no direct API rate limit to worry about).
-            update_interval=timedelta(hours=2),
+            # Poll interval scales with the mow cycle: every mow_cycle_h / 2 hours
+            # (minimum 1 h). This is recomputed when options change.
+            update_interval=self._compute_poll_interval(),
         )
 
     # ------------------------------------------------------------------
@@ -112,6 +117,21 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _cfg(self) -> dict[str, Any]:
         """Merged config with options taking priority over entry data."""
         return {**self.entry.data, **self.entry.options}
+
+    def _compute_poll_interval(self) -> timedelta:
+        """Return update_interval derived from the mow cycle setting.
+
+        Poll every mow_cycle_duration_hours / 2, floored at 1 hour so that
+        short mow cycles don't cause excessive weather API usage.
+        """
+        mow_cycle_h = float(
+            self._cfg.get(
+                CONF_MOW_CYCLE_DURATION_HOURS,
+                DEFAULT_MOW_CYCLE_DURATION_HOURS,
+            )
+        )
+        hours = max(1.0, mow_cycle_h / 2.0)
+        return timedelta(hours=hours)
 
     @property
     def last_mow_timestamp(self) -> datetime | None:
@@ -145,14 +165,39 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stored = await self._store.async_load()
         if stored:
             self._stored_data = dict(stored)
+            _LOGGER.info(
+                "Loaded stored mow data: last_mow=%s, mowed_to_height=%.1f in, session_active=%s",
+                stored.get(STORE_LAST_MOW_TIMESTAMP, "none"),
+                float(stored.get(STORE_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT)),
+                stored.get(STORE_MOW_SESSION_ACTIVE, False),
+            )
+        else:
+            _LOGGER.info("No stored mow data found; starting with no prior mow recorded")
+        _LOGGER.info(
+            "Poll interval: %s (mow_cycle=%.1f h \u00f7 2; min 1 h)",
+            self.update_interval,
+            float(self._cfg.get(
+                CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS
+            )),
+        )
 
     async def async_mark_mowed(self, mowed_to_height: float | None = None) -> None:
-        """Record a mowing event; persist and refresh immediately."""
+        """Record a mowing event; persist and refresh immediately.
+
+        Also clears any active mow session so the switch is not left ON
+        when a manual mow is recorded outside of the automated session flow.
+        """
         now = dt_util.now()
         if mowed_to_height is None:
             mowed_to_height = self._cfg.get(CONF_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT)
+        _LOGGER.info(
+            "mark_mowed: recording mow at %s, mowed_to_height=%.1f in (session_was_active=%s)",
+            now.isoformat(), mowed_to_height,
+            self._stored_data.get(STORE_MOW_SESSION_ACTIVE, False),
+        )
         self._stored_data[STORE_LAST_MOW_TIMESTAMP] = now.isoformat()
         self._stored_data[STORE_MOWED_TO_HEIGHT] = float(mowed_to_height)
+        self._stored_data[STORE_MOW_SESSION_ACTIVE] = False
         await self._store.async_save(self._stored_data)
         await self.async_refresh()
 
@@ -161,6 +206,10 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = dt_util.now()
         if mowed_to_height is None:
             mowed_to_height = self._cfg.get(CONF_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT)
+        _LOGGER.info(
+            "complete_mow: recording mow at %s, mowed_to_height=%.1f in",
+            now.isoformat(), mowed_to_height,
+        )
         self._stored_data[STORE_LAST_MOW_TIMESTAMP] = now.isoformat()
         self._stored_data[STORE_MOWED_TO_HEIGHT] = float(mowed_to_height)
         self._stored_data[STORE_MOW_SESSION_ACTIVE] = False
@@ -187,7 +236,23 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = dt_util.now()
         session = async_get_clientsession(self.hass)
 
-        await self._read_weather_from_ha()
+        if self._weather_needs_update(now):
+            await self._read_weather_from_ha()
+        else:
+            age_min = (now - self._weather_fetched_at).total_seconds() / 60.0  # type: ignore[operator]
+            mow_cycle_h = float(
+                self._cfg.get(
+                    CONF_MOW_CYCLE_DURATION_HOURS,
+                    DEFAULT_MOW_CYCLE_DURATION_HOURS,
+                )
+            )
+            ttl_min = max(60.0, mow_cycle_h / 2.0 * 60.0)
+            _LOGGER.debug(
+                "Weather data is fresh (%.0f / %.0f min); "
+                "skipping weather.get_forecasts calls",
+                age_min,
+                ttl_min,
+            )
 
         if self._soil_moisture_needs_update(now):
             await self._fetch_soil_moisture(session)
@@ -210,6 +275,20 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._soil_temp_fetched_at is None or (
             (now - self._soil_temp_fetched_at).total_seconds() >= SOIL_UPDATE_INTERVAL
         )
+
+    def _weather_needs_update(self, now: datetime) -> bool:
+        if self._weather_fetched_at is None:
+            return True
+        mow_cycle_h = float(
+            self._cfg.get(
+                CONF_MOW_CYCLE_DURATION_HOURS,
+                DEFAULT_MOW_CYCLE_DURATION_HOURS,
+            )
+        )
+        ttl_s = max(3_600.0, mow_cycle_h / 2.0 * 3_600.0)
+        return (
+            now - self._weather_fetched_at
+        ).total_seconds() >= ttl_s
 
     # ------------------------------------------------------------------
     # Fetchers
@@ -248,7 +327,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raw_cur_temp = float(attrs.get("temperature") or 70.0)
         self._current_temp_f = raw_cur_temp if temp_unit != "°C" else raw_cur_temp * 9.0 / 5.0 + 32.0
 
-        # --- Daily forecast: GDD + today's rainfall ---
+        # --- Daily forecast: GDD + today's total rainfall (for growth-rate factor) ---
         try:
             daily_resp = await self.hass.services.async_call(
                 "weather",
@@ -271,13 +350,17 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             rain_inches = rain_raw * 0.03937 if precip_unit == "mm" else rain_raw
 
             self._weather_data = {"gdd": gdd, "rainfall": rain_inches}
+            _LOGGER.debug(
+                "Daily forecast from %s: GDD=%.1f °F·d, daily_precip=%.3f in (t_high=%.1f, t_low=%.1f)",
+                weather_entity_id, gdd, rain_inches, t_high, t_low,
+            )
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to read daily forecast from %s: %s", weather_entity_id, err)
             if self._weather_data is None:
                 self._weather_data = {"gdd": 10.0, "rainfall": 0.0}
 
-        # --- Hourly forecast: wet/dry scheduling ---
+        # --- Hourly forecast: wet/dry scheduling + actual past rainfall ---
         try:
             hourly_resp = await self.hass.services.async_call(
                 "weather",
@@ -288,7 +371,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             hourly_raw = (hourly_resp or {}).get(weather_entity_id, {}).get("forecast") or []
 
+            now_ts = dt_util.now().timestamp()
             slots = []
+            past_rain_in = 0.0
             for slot in hourly_raw:
                 raw_dt = slot.get("datetime")
                 try:
@@ -311,10 +396,35 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "wind_mph": _to_mph(float(slot.get("wind_speed") or 0.0), wind_unit),
                     "cloud_pct": float(slot.get("cloud_coverage") or 50.0),
                 })
+                # Accumulate rain only from slots whose period has already passed.
+                # OWM typically only returns future slots; if so past_rain_in stays 0.
+                if dt_epoch <= now_ts:
+                    past_rain_in += rain_in
+
             self._hourly_forecast = slots
+            self._past_rainfall_in = past_rain_in
+            _LOGGER.debug(
+                "Hourly forecast from %s: %d slots, past_rain_in=%.3f in "
+                "(daily_total=%.3f in; %d slots are in the past)",
+                weather_entity_id, len(slots), past_rain_in,
+                (self._weather_data or {}).get("rainfall", 0.0),
+                sum(1 for s in slots if s["dt"] <= now_ts),
+            )
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to read hourly forecast from %s: %s", weather_entity_id, err)
+
+        self._weather_fetched_at = dt_util.now()
+        _LOGGER.info(
+            "Weather fetch complete from %s: GDD=%.1f °F·d, daily_precip=%.3f in, "
+            "past_rain=%.3f in, hourly_slots=%d, humidity=%.0f%%",
+            weather_entity_id,
+            (self._weather_data or {}).get("gdd", 0.0),
+            (self._weather_data or {}).get("rainfall", 0.0),
+            self._past_rainfall_in,
+            len(self._hourly_forecast),
+            self._current_humidity,
+        )
 
     async def _fetch_soil_moisture(self, session) -> None:
         """Fetch volumetric soil moisture from National Soil Moisture Network."""
@@ -496,17 +606,26 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             cur_wind_mph = self._current_wind_mph
             cur_cloud_pct = self._current_cloud_pct
 
-        # Estimate how much of today's rainfall has already evaporated.
-        # Assume drying conditions have been roughly constant since dawn (06:00 local).
-        # This is a conservative lower bound — some drying may have occurred before dawn.
+        # Estimate surface moisture from rainfall that has *already fallen* (past hourly slots)
+        # minus evaporation since dawn.  Using the daily forecast total here was wrong because
+        # it includes future rain (e.g. tonight's forecast), which inflated moisture all day.
+        past_rain = self._past_rainfall_in
         hours_since_dawn = max(0.0, (now.hour + now.minute / 60.0) - 6.0)
         current_evap_rate = _evaporation_rate_in_per_hour(
             cur_temp_f, cur_wind_mph, cur_cloud_pct, current_humidity
         )
         evaporated_today = current_evap_rate * hours_since_dawn
-        current_moisture_in = max(0.0, rainfall - evaporated_today)
+        current_moisture_in = max(0.0, past_rain - evaporated_today)
 
         grass_wet = (current_moisture_in >= wet_rain_in) or (current_humidity >= wet_humidity)
+        _LOGGER.debug(
+            "Wet-grass check: past_rain=%.3f in, evap_rate=%.4f in/h, hours_since_dawn=%.1f h, "
+            "evaporated=%.3f in, current_moisture=%.3f in, humidity=%.0f%% "
+            "(wet_rain_thr=%.2f in, wet_hum_thr=%.0f%%) → grass_wet=%s",
+            past_rain, current_evap_rate, hours_since_dawn, evaporated_today,
+            current_moisture_in, current_humidity,
+            wet_rain_in, wet_humidity, grass_wet,
+        )
 
         # --- Dry mow window ---
         hourly_window = self._hourly_forecast[:lookahead_h]
@@ -570,6 +689,15 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or (normal_trigger and grass_wet and not dry_window_soon)
         )
 
+        _LOGGER.debug(
+            "Compute result: height=%.2f in, growth=%.2f in, days_since_mow=%.2f, "
+            "daily_rate=%.5f in/d, mow_recommended=%s, mow_overdue=%s, "
+            "mow_not_advised=%s, dry_window=%s",
+            current_height, growth_since_mow, days_since_mow, daily_rate,
+            mow_recommended, mow_overdue, mow_not_advised,
+            dry_window_dt.isoformat() if dry_window_dt else "none",
+        )
+
         return {
             "current_height": round(current_height, 2),
             "daily_growth_rate": round(daily_rate, 5),
@@ -578,6 +706,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_mow_timestamp": last_mow.isoformat() if last_mow else None,
             "gdd": round(gdd, 2),
             "rainfall": round(rainfall, 4),
+            "past_rainfall": round(past_rain, 4),
             "current_moisture": round(current_moisture_in, 4),
             "soil_moisture": round(soil_moisture, 1),
             "soil_temperature": round(soil_temp, 1),
