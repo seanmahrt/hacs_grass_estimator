@@ -8,7 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- **Wet-grass scheduling** — the integration now avoids mowing wet grass using OpenWeatherMap hourly forecast data:
+- `binary_sensor.mow_not_advised` — single go/no-go indicator for **manual mowing**. `ON` when the grass is currently wet (`binary_sensor.grass_wet` is ON) **or** any hourly forecast slot within the next `mow_cycle_duration_hours` hours has significant rain (> 0.04 in), high precipitation probability (> 30%), or humidity above the wet threshold. The lookahead window uses the same cycle-duration setting as the dry-window search so both sensors are consistent.
+
+### Changed
+- **OWM fetch interval is now dynamic**: refreshed at `max(2 h, mow_cycle_duration_hours / 2)`. With the default 12 h cycle this gives a 6 h OWM interval; shorter cycles poll more frequently down to the 2 h floor. `WEATHER_MIN_UPDATE_INTERVAL = 7_200` (2 h) added to `const.py`.
+- **Coordinator poll interval reduced from 12 h to 2 h** so it can honour the dynamic weather TTL (which may be as short as 2 h). Soil and height calculations use their own longer TTLs and are unaffected.
+
+---
+
+## [Unreleased — previously] — the integration now avoids mowing wet grass using OpenWeatherMap hourly forecast data:
   - `binary_sensor.grass_wet` — `ON` when today's rainfall ≥ wet rain threshold **or** current hourly humidity ≥ wet humidity threshold. Device class `moisture`.
   - `binary_sensor.dry_mow_window_soon` — `ON` when a contiguous dry window long enough to complete a full mow cycle is found within the hourly forecast lookahead.
   - `sensor.next_dry_mow_window` — `SensorDeviceClass.TIMESTAMP` sensor reporting the start time of the next dry mow window, or `unknown` if none found.

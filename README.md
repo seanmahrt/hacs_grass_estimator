@@ -231,6 +231,8 @@ entities:
     name: Mow Overdue
   - entity: binary_sensor.grass_wet
     name: Grass Wet
+  - entity: binary_sensor.mow_not_advised
+    name: Mow Not Advised
   - entity: binary_sensor.dry_mow_window_soon
     name: Dry Window Soon
   - entity: sensor.next_dry_mow_window
@@ -286,6 +288,7 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 | `binary_sensor.mow_recommended` | — | `ON` according to the wet-grass scheduling logic (see **Wet-Grass Scheduling** section below) |
 | `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height or wet state |
 | `binary_sensor.grass_wet` | `moisture` | `ON` when today's rainfall ≥ wet rain threshold **or** current humidity ≥ wet humidity threshold |
+| `binary_sensor.mow_not_advised` | — | `ON` when the grass is currently wet **or** any hourly forecast slot within the next `mow_cycle_duration_hours` hours is rainy or humid. Use this as a single go/no-go indicator when mowing manually. |
 | `binary_sensor.dry_mow_window_soon` | — | `ON` when a dry window long enough to complete a full mow cycle exists within the lookahead period |
 
 The min/max days act as hard bounds: `mow_recommended` will never fire before `min_days`, and always fires at `max_days`. Between those bounds, the grass growth estimate and wet-grass scheduling logic drive the trigger.

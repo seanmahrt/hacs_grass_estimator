@@ -26,7 +26,8 @@ DEFAULT_ENABLE_SOIL_MOISTURE = True
 DEFAULT_ENABLE_SOIL_TEMP = True
 
 # ----- Update intervals (seconds) -----
-WEATHER_UPDATE_INTERVAL = 43_200    # 12 h
+WEATHER_UPDATE_INTERVAL = 43_200    # 12 h fallback; overridden at runtime by max(2 h, mow_cycle/2)
+WEATHER_MIN_UPDATE_INTERVAL = 7_200  # 2 h — fastest OWM is ever polled
 SOIL_UPDATE_INTERVAL = 43_200       # 12 h
 HEIGHT_UPDATE_INTERVAL = 43_200     # 12 h
 
@@ -113,6 +114,7 @@ BINARY_SENSOR_MOW_RECOMMENDED = "mow_recommended"
 BINARY_SENSOR_MOW_OVERDUE = "mow_overdue"
 BINARY_SENSOR_GRASS_WET = "grass_wet"
 BINARY_SENSOR_DRY_MOW_WINDOW_SOON = "dry_mow_window_soon"
+BINARY_SENSOR_MOW_NOT_ADVISED = "mow_not_advised"
 
 ATTR_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 ATTR_DAILY_GROWTH_RATE = "daily_growth_rate"

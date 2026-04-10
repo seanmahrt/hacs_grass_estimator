@@ -4,7 +4,7 @@
 
 ## Overview
 
-The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes **ten sensor entities**, **four binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
+The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every 12 hours to refresh external data, and exposes **ten sensor entities**, **five binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
 
 ---
 
@@ -34,6 +34,7 @@ All sensors share the same **Grass Growth Predictor** device and update together
 | `binary_sensor.mow_recommended` | — | `ON` per wet-grass scheduling logic: always ON when overdue or force threshold exceeded; ON when normal trigger + dry; ON when normal trigger + wet + no dry window in lookahead |
 | `binary_sensor.mow_overdue` | `problem` | `ON` when `days_since_mow ≥ max_days_between_mows` regardless of height or wet state |
 | `binary_sensor.grass_wet` | `moisture` | `ON` when rainfall ≥ wet rain threshold OR current humidity ≥ wet humidity threshold |
+| `binary_sensor.mow_not_advised` | — | `ON` when currently wet OR any hourly slot within `mow_cycle_duration_hours` hours fails the dry test (rain > 0.04 in, pop > 30%, or humidity ≥ threshold). Single go/no-go indicator for manual mowing. |
 | `binary_sensor.dry_mow_window_soon` | — | `ON` when a contiguous dry window ≥ `mow_cycle_duration_hours` exists within the hourly forecast lookahead |
 
 ### Switch
@@ -106,7 +107,7 @@ sequenceDiagram
     Coord->>Store: load persisted data\n(last mow, weather cache, fetched_at)
     Coord->>HA: async_config_entry_first_refresh()
 
-    loop Every 12 hours
+    loop Every 2 hours (coordinator poll)
         HA->>Coord: _async_update_data()
         alt weather TTL elapsed
             Coord->>OWM: GET /data/3.0/onecall\n(lat, lon, units=imperial, exclude=current,minutely,alerts)
@@ -187,10 +188,10 @@ daily_rate = base_rate
 
 | Data source | Fetch interval | Notes |
 |---|---|---|
-| OpenWeatherMap One Call 3.0 (GDD + rainfall) | 12 hours | Cached to storage; survives HA restarts |
+| OpenWeatherMap One Call 3.0 (GDD + rainfall + hourly) | `max(2 h, mow_cycle_duration / 2)` | Minimum 2 h; scales with the configured mow cycle. Default cycle = 12 h → 6 h interval. Cached to storage; survives HA restarts. |
 | National Soil Moisture Network (soil moisture %) | 12 hours | In-memory cache only |
 | USDA SCAN (2-inch soil temperature) | 12 hours | Station triplet resolved once, then cached in memory |
-| Height calculation (coordinator poll) | 12 hours | Pure computation — no network call |
+| Coordinator poll (height calculation + TTL checks) | 2 hours | Coordinator wakes every 2 h to honour the minimum OWM TTL; soil/height recalculation happens on the same tick but only fetches data when their individual TTLs are elapsed |
 
 ---
 

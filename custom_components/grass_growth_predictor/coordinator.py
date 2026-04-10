@@ -18,6 +18,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     BINARY_SENSOR_DRY_MOW_WINDOW_SOON,
     BINARY_SENSOR_GRASS_WET,
+    BINARY_SENSOR_MOW_NOT_ADVISED,
     BINARY_SENSOR_MOW_OVERDUE,
     BINARY_SENSOR_MOW_RECOMMENDED,
     CONF_BASE_GROWTH_RATE,
@@ -67,6 +68,7 @@ from .const import (
     STORE_MOWED_TO_HEIGHT,
     STORE_WEATHER_DATA,
     STORE_WEATHER_FETCHED_AT,
+    WEATHER_MIN_UPDATE_INTERVAL,
     WEATHER_UPDATE_INTERVAL,
 )
 
@@ -100,7 +102,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=HEIGHT_UPDATE_INTERVAL),
+            # Poll every 2 h so the dynamic OWM TTL (max 2 h, mow_cycle/2) is honoured.
+            # The height calculation and soil fetches use their own longer TTLs internally.
+            update_interval=timedelta(seconds=WEATHER_MIN_UPDATE_INTERVAL),
         )
 
     # ------------------------------------------------------------------
@@ -215,8 +219,13 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     def _weather_needs_update(self, now: datetime) -> bool:
+        # Refresh OWM at half the mow-cycle duration, but never faster than 2 h.
+        mow_cycle_h = float(
+            self._cfg.get(CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS)
+        )
+        ttl = max(WEATHER_MIN_UPDATE_INTERVAL, (mow_cycle_h / 2.0) * 3600.0)
         return self._weather_fetched_at is None or (
-            (now - self._weather_fetched_at).total_seconds() >= WEATHER_UPDATE_INTERVAL
+            (now - self._weather_fetched_at).total_seconds() >= ttl
         )
 
     def _soil_moisture_needs_update(self, now: datetime) -> bool:
@@ -476,6 +485,18 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         dry_window_soon = dry_window_dt is not None
 
+        # --- Mow-not-advised: covers the whole mow cycle window ---
+        # ON when currently wet OR any hourly slot in the next mow_cycle_h hours is wet.
+        # Intended as a manual-mow indicator: if you start now, will conditions stay tolerable?
+        cycle_slots = self._hourly_forecast[:max(1, math.ceil(mow_cycle_h))]
+        rain_coming = any(
+            float(s.get("rain_1h", 0.0)) > _DRY_SLOT_RAIN_IN
+            or float(s.get("pop", 0.0)) > _DRY_SLOT_POP_MAX
+            or int(s.get("humidity", 0)) >= wet_humidity
+            for s in cycle_slots
+        )
+        mow_not_advised = grass_wet or rain_coming
+
         # --- Mowing thresholds ---
         # mow_overdue: hard upper bound — always ON at max_days, ignores wet state
         mow_overdue = last_mow is None or days_since_mow >= max_days
@@ -511,6 +532,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "current_humidity": round(current_humidity, 1),
             SENSOR_NEXT_DRY_MOW_WINDOW: dry_window_dt,
             BINARY_SENSOR_GRASS_WET: grass_wet,
+            BINARY_SENSOR_MOW_NOT_ADVISED: mow_not_advised,
             BINARY_SENSOR_DRY_MOW_WINDOW_SOON: dry_window_soon,
             BINARY_SENSOR_MOW_RECOMMENDED: mow_recommended,
             BINARY_SENSOR_MOW_OVERDUE: mow_overdue,

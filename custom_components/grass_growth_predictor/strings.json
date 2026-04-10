@@ -57,7 +57,7 @@
           "max_days_between_mows": "Mow Overdue turns ON after this many days regardless of height (upper bound).",
           "max_growth_between_mows": "Growth above mowed-to height (in) that triggers normal mow scheduling. A dry window is preferred. Default 0.5 in.",
           "force_mow_growth_threshold": "Growth above mowed-to height (in) that forces a mow regardless of wet conditions. Default 1.0 in.",
-          "mow_cycle_duration_hours": "How long the automated mower takes to complete a full cycle. Used to find a contiguous dry window. Default 12 h.",
+          "mow_cycle_duration_hours": "How long the automated mower takes to complete a full cycle. Used to find a contiguous dry window and to determine the Mow Not Advised lookahead. Default 12 h.",
           "wet_rain_threshold_in": "Today's accumulated rainfall (in) above which the grass is considered wet. Default 0.1 in.",
           "wet_humidity_pct": "Current humidity (%) above which the grass is considered wet (dew/overnight moisture). Default 85%.",
           "dry_window_lookahead_hours": "Hours of hourly forecast to scan for a dry mow window. If none found, mow anyway. Default 48 h."

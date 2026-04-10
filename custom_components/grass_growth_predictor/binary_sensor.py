@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     BINARY_SENSOR_DRY_MOW_WINDOW_SOON,
     BINARY_SENSOR_GRASS_WET,
+    BINARY_SENSOR_MOW_NOT_ADVISED,
     BINARY_SENSOR_MOW_OVERDUE,
     BINARY_SENSOR_MOW_RECOMMENDED,
     DOMAIN,
@@ -29,6 +30,7 @@ async def async_setup_entry(
             MowRecommendedBinarySensor(coordinator, entry),
             MowOverdueBinarySensor(coordinator, entry),
             GrassWetBinarySensor(coordinator, entry),
+            MowNotAdvisedBinarySensor(coordinator, entry),
             DryMowWindowSoonBinarySensor(coordinator, entry),
         ]
     )
@@ -101,6 +103,20 @@ class GrassWetBinarySensor(_MowBinarySensorBase):
     _attr_icon = "mdi:water"
     _attr_device_class = BinarySensorDeviceClass.MOISTURE
     _data_key = BINARY_SENSOR_GRASS_WET
+
+
+class MowNotAdvisedBinarySensor(_MowBinarySensorBase):
+    """ON when conditions are unsuitable for mowing across the entire mow cycle window.
+
+    Fires when the grass is currently wet OR any hourly forecast slot within
+    the configured mow cycle duration has significant rain, high precipitation
+    probability, or high humidity. Intended as a single green/red indicator
+    for a person about to start mowing manually.
+    """
+
+    _attr_name = "Mow Not Advised"
+    _attr_icon = "mdi:cancel"
+    _data_key = BINARY_SENSOR_MOW_NOT_ADVISED
 
 
 class DryMowWindowSoonBinarySensor(_MowBinarySensorBase):
