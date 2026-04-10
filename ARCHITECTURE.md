@@ -14,6 +14,16 @@
 - [Data Flow](#data-flow)
 - [Growth Model](#growth-model)
   - [Height Formula](#height-formula)
+  - [Seasonal Factor](#seasonal-factor)
+  - [GDD Factor](#gdd-factor)
+  - [Rain Factor](#rain-factor)
+  - [Soil Moisture Factor](#soil-moisture-factor)
+  - [Soil Temperature Factor](#soil-temperature-factor)
+- [Mow Scheduling Logic](#mow-scheduling-logic)
+  - [grass\_wet](#binary_sensorgrassw_et)
+  - [mow\_not\_advised](#binary_sensormownot_advised)
+  - [dry\_mow\_window\_soon / next\_dry\_mow\_window](#binary_sensordry_mow_window_soon--sensornext_dry_mow_window)
+  - [mow\_recommended](#binary_sensormow_recommended)
 - [Update Intervals](#update-intervals)
 - [Persistence](#persistence)
 - [Configuration Options](#configuration-options)
@@ -199,8 +209,206 @@ daily_rate = base_rate
            × gdd_factor      (0.05 – 2.0,  GDD / 20)
            × rain_factor     (0.80 – 1.50, 1 + rainfall_in × 0.25)
            × soil_moisture   (0.05 – 1.0,  piecewise by %)
-           × soil_temp       (0.05 – 1.0,  piecewise by °F)
+           × soil_temp       (0.00 – 1.0,  piecewise by °F)
 ```
+
+---
+
+### Seasonal Factor
+
+Tuned for Northern Hemisphere cool-season turf (tall fescue, Kentucky bluegrass, perennial ryegrass). Peak growth in May; secondary flush in September as temperatures moderate.
+
+| Month | Factor |
+|---|---|
+| January | 0.30 |
+| February | 0.40 |
+| March | 0.70 |
+| April | 1.20 |
+| May | 1.50 |
+| June | 1.30 |
+| July | 1.00 |
+| August | 0.90 |
+| September | 1.10 |
+| October | 0.80 |
+| November | 0.50 |
+| December | 0.30 |
+
+---
+
+### GDD Factor
+
+Growing Degree Days (GDD) measure heat accumulation above the base growth threshold for cool-season grasses (50 °F / 10 °C).
+
+```
+GDD       = max(0, (T_high + T_low) / 2 − 50 °F)
+gdd_factor = clamp(GDD / 20.0, min=0.05, max=2.0)
+```
+
+The `OPTIMAL_GDD_DAILY` constant (20 °F·d) represents a typical high-growth day; at that value the factor is exactly `1.0`. Values above `1.0` accelerate growth up to `2.0×`; abnormally cold days floor at `0.05`.
+
+| GDD (°F·d) | Factor |
+|---|---|
+| 0 | 0.05 |
+| 5 | 0.25 |
+| 10 | 0.50 |
+| 20 | 1.00 |
+| 30 | 1.50 |
+| ≥ 40 | 2.00 (capped) |
+
+---
+
+### Rain Factor
+
+Rainfall boosts the growth rate (well-watered conditions promote faster growth).
+
+```
+rain_factor = clamp(1.0 + rainfall_in × 0.25, min=0.80, max=1.50)
+```
+
+The floor of `0.80` is a safety net; since `rainfall_in ≥ 0`, the formula always produces `≥ 1.0` in practice.
+
+| Rainfall today (in) | Factor |
+|---|---|
+| 0 | 1.00 |
+| 0.5 | 1.13 |
+| 1.0 | 1.25 |
+| 2.0 | 1.50 (capped) |
+
+---
+
+### Soil Moisture Factor
+
+Maps volumetric soil moisture percentage to a growth multiplier. Optimal range is 30–65%.
+
+```
+pct < 10          →  0.05                          (drought suppression)
+10 ≤ pct < 30     →  0.05 + (pct − 10) / 20 × 0.95 (linear recovery)
+30 ≤ pct ≤ 65     →  1.0                           (optimal)
+65 < pct ≤ 85     →  1.0 − (pct − 65) / 20 × 0.35  (waterlogged, mild suppression)
+pct > 85          →  0.65                           (saturated)
+```
+
+| Soil Moisture (%) | Factor |
+|---|---|
+| 0 | 0.05 |
+| 10 | 0.05 |
+| 20 | 0.52 |
+| 30 | 1.00 |
+| 65 | 1.00 |
+| 75 | 0.82 |
+| 85 | 0.65 |
+| > 85 | 0.65 |
+
+---
+
+### Soil Temperature Factor
+
+Maps 2-inch soil temperature (°F) to a growth multiplier calibrated for cool-season turf. Growth ceases at or below freezing.
+
+```
+temp ≤ 32         →  0.0                            (frozen)
+32 < temp < 50    →  (temp − 32) / 18 × 0.25        (near-dormancy)
+50 ≤ temp < 60    →  0.25 + (temp − 50) / 10 × 0.75 (green-up)
+60 ≤ temp ≤ 75    →  1.0                            (optimal cool-season range)
+75 < temp ≤ 95    →  1.0 − (temp − 75) / 20 × 0.55  (heat suppression)
+temp > 95         →  0.45                           (peak heat stress)
+```
+
+| Soil Temp (°F) | Factor |
+|---|---|
+| 32 | 0.00 |
+| 40 | 0.11 |
+| 50 | 0.25 |
+| 60 | 1.00 |
+| 75 | 1.00 |
+| 85 | 0.72 |
+| 95 | 0.45 |
+| > 95 | 0.45 |
+
+---
+
+## Mow Scheduling Logic
+
+All scheduling binary sensors are recomputed on every coordinator poll (every 2 hours) from the latest hourly forecast and current state.
+
+### `binary_sensor.grass_wet`
+
+`ON` when **either** condition is true:
+
+| Condition | Source | Configurable threshold |
+|---|---|---|
+| Today's accumulated rainfall ≥ threshold | Daily forecast `precipitation` field | `wet_rain_threshold_in` (default 0.1 in) |
+| Current humidity ≥ threshold | Most recent hourly slot `humidity`; falls back to live weather entity `humidity` attribute if no hourly slots available | `wet_humidity_pct` (default 85%) |
+
+---
+
+### `binary_sensor.mow_not_advised`
+
+Single go/no-go indicator for **manual mowing right now**.
+
+`ON` when the grass is **currently wet** (see `grass_wet` above) **OR** any hourly forecast slot within the next `mow_cycle_duration_hours` hours fails the dry test:
+
+| Per-slot criterion | Threshold |
+|---|---|
+| Rain per hour | > 0.04 in (~1 mm/h) |
+| Precipitation probability | > 30% |
+| Relative humidity | ≥ `wet_humidity_pct` |
+
+The lookahead window is `ceil(mow_cycle_duration_hours)` slots — the same duration used to find a dry window. It answers: *if you start mowing now, will conditions stay tolerable long enough to finish a full cycle?*
+
+---
+
+### `binary_sensor.dry_mow_window_soon` / `sensor.next_dry_mow_window`
+
+Scans up to `dry_window_lookahead_hours` of the hourly forecast for a contiguous block of dry slots that covers an entire mow cycle.
+
+**Per-slot dry criteria** (all three must be satisfied):
+
+| Criterion | Internal threshold | Configurable? |
+|---|---|---|
+| Rain per hour | ≤ 0.04 in (~1 mm/h) | No |
+| Precipitation probability | ≤ 30% | No |
+| Relative humidity | < `wet_humidity_pct` | Yes (default 85%) |
+
+**Window duration check** — validated against real timestamps, not slot count:
+
+```
+window_duration = next_slot.dt − first_dry_slot.dt
+                 (last slot uses its own dt + 3600 s as its end)
+window is accepted when window_duration ≥ mow_cycle_duration_hours × 3600 s
+```
+
+This is correct regardless of the forecast interval (1-hour, 3-hour, etc.) provided by the configured weather entity.
+
+`sensor.next_dry_mow_window` reports the `datetime` of the first qualifying slot.  
+`binary_sensor.dry_mow_window_soon` is `ON` when any qualifying window was found.
+
+---
+
+### `binary_sensor.mow_recommended`
+
+Four-condition OR gate. All thresholds are user-configurable via integration options.
+
+```
+mow_overdue    = days_since_mow ≥ max_days_between_mows
+force_mow      = growth_since_mow ≥ force_mow_growth_threshold
+days_ok        = days_since_mow ≥ min_days_between_mows
+normal_trigger = days_ok AND growth_since_mow ≥ max_growth_between_mows
+
+mow_recommended =
+    mow_overdue                                         ← hard deadline — always fires
+    OR force_mow                                        ← overgrown — always fires
+    OR (normal_trigger AND NOT grass_wet)               ← ideal: grown enough and dry
+    OR (normal_trigger AND grass_wet AND NOT dry_window_soon)
+                                                        ← wet but no dry window coming
+```
+
+| Condition | Respects wet state? | Notes |
+|---|---|---|
+| `mow_overdue` | No | Hard upper day limit — mow regardless of conditions |
+| `force_mow` | No | Overgrown — delay risks scalping; mow regardless |
+| Normal trigger + dry | n/a | Preferred path |
+| Normal trigger + wet + no window | — | Prevents indefinite postponement during prolonged wet weather |
 
 ---
 

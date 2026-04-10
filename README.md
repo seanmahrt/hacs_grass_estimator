@@ -50,14 +50,14 @@ A Home Assistant custom integration that estimates your current grass height bas
 | Feature | Description |
 |---|---|
 | **Height tracking** | Estimates grass height in inches since the last mow |
-| **Growing Degree Days** | Uses OpenWeatherMap to compute GDD-based growth acceleration |
-| **Rainfall factor** | Precipitation data boosts the daily growth rate |
+| **Growing Degree Days** | Reads daily high/low temperature from the HA weather entity to compute GDD-based growth acceleration |
+| **Rainfall factor** | Today's precipitation from the HA weather entity boosts the daily growth rate |
 | **Soil moisture factor** | National Soil Moisture Network API adjusts growth for wet/dry soil |
 | **Soil temperature factor** | Nearest USDA SCAN station soil temperature scales growth |
 | **Seasonal factor** | Month-based multiplier tuned for Northern Hemisphere cool-season turf |
 | **Toggle multipliers** | Each factor can be individually enabled or disabled |
 | **Automated mower control** | Switch output to trigger a mow session, binary sensors for recommended/overdue status, growth-based trigger with configurable min/max day bounds and growth thresholds |
-| **Wet-grass scheduling** | Skips mowing when grass is wet (recent rainfall or high humidity/dew). A configurable force-mow threshold overrides the wet check when the grass has grown too long. A dry-window lookahead scans the 48-hour hourly forecast to find a suitable mow window before falling back to mowing anyway. |
+| **Wet-grass scheduling** | Skips mowing when grass is wet (recent rainfall or high humidity/dew from the HA weather entity hourly forecast). A configurable force-mow threshold overrides the wet check when the grass has grown too long. A dry-window lookahead scans the hourly forecast to find a suitable mow window before falling back to mowing anyway. |
 
 ---
 
@@ -101,7 +101,6 @@ This integration reads weather data from an existing HA weather entity rather th
 | **Latitude** | Location latitude | HA configured latitude |
 | **Longitude** | Location longitude | HA configured longitude |
 | **Weather Entity** | The HA weather entity to read forecasts from (e.g. `weather.openweathermap`). Must support daily and hourly forecasts. | `weather.openweathermap` |
-| **Weather Entity** | The HA weather entity for daily and hourly forecast data. Must support both forecast types. | `weather.openweathermap` |
 | **Mowed-To Height (in)** | Height the grass was last cut to | `3.0` |
 | **Base Growth Rate (in/day)** | Maximum daily growth under ideal conditions | `0.15` |
 | **Enable Seasonal Factor** | Apply month-based growth multiplier | `true` |
@@ -360,7 +359,7 @@ Turning the switch **OFF** cancels the session without recording a mow. To recor
 | `button.mark_mowed` | Manual mow record — resets the growth timer immediately. Use for ad-hoc mowing outside of an automated session. |
 | `button.mow_complete` | Automated session completion — records the mow *and* deactivates the `mow_session_active` switch. |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full growth model and factor details.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full growth model factor tables and mow scheduling logic details.
 
 ---
 
@@ -503,8 +502,8 @@ The last condition ensures the mower still runs when the grass has grown enough 
 
 | Condition | Source |
 |---|---|
-| `rainfall ≥ wet_rain_threshold_in` | Today's accumulated precipitation from OWM daily forecast (mm → inches) |
-| `current_humidity ≥ wet_humidity_pct` | Humidity from the most recent OWM hourly slot |
+| `rainfall ≥ wet_rain_threshold_in` | Today's accumulated precipitation from the HA weather entity daily forecast (unit-aware: mm → in) |
+| `current_humidity ≥ wet_humidity_pct` | Humidity from the most recent HA weather entity hourly forecast slot; falls back to the live `humidity` attribute if no hourly slots are available |
 
 Either condition alone makes `binary_sensor.grass_wet` turn `ON`.
 
