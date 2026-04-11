@@ -21,17 +21,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Documentation: entity references updated to match HA display names** — `sensor.growth_since_mow` corrected to `sensor.growth_since_last_mow` throughout README and ARCHITECTURE (entity `_attr_name` is "Growth Since Last Mow"). Added missing `binary_sensor.mow_not_advised` to the README Outputs quick-reference table.
 - **`Mow Not Advised` / `Grass Wet` stuck ON due to future-rain attribution** — `current_moisture_in` was previously computed from the daily forecast total (including rain forecast for later today/tonight). It now uses only `past_rainfall_in`: the sum of precipitation from hourly forecast slots whose datetime is already in the past. This prevents a heavy evening forecast from marking the grass as wet all morning.
 - **`Mark Mowed` left `Mow Session Active` switch ON** — `async_mark_mowed` now sets `mow_session_active = False` before saving, matching the behaviour of `async_complete_mow`. Both mow-recording paths clear the session unconditionally.
 
 ### Added
-- **Dynamic poll interval and weather TTL driven by Mow Cycle Duration** — the coordinator now polls every `max(1 h, mow_cycle_duration_hours / 2)`, and the weather data TTL matches. For the default 12 h mow cycle this is every 6 h; for a 4 h cycle every 2 h; minimum is 1 h regardless of cycle length. The interval is updated live when **Mow Cycle Duration** is changed in the options flow without requiring an HA restart. Startup and options-change logs show the computed interval.
+- **Hourly refresh aligned to :50 past each hour** — the coordinator no longer uses an interval-based auto-poll. Instead, `async_track_utc_time_change` (minute=50, second=0) drives all periodic refreshes. This guarantees sensor state is updated 10 minutes before each hourly forecast boundary, so dry-window automations that trigger at the top of the hour always see current data. The weather TTL is fixed at 55 minutes (down from `max(1 h, mow_cycle_h / 2)`) so every `:50` tick reliably fetches a fresh forecast. Manual refreshes (`mark_mowed`, `mow_complete`, options save) continue to work independently and still respect the 55 min weather TTL to avoid redundant API calls.
+
+### Changed
+- **Dynamic poll interval removed** — `_compute_poll_interval()` and its `update_interval` wiring have been removed. The mow cycle duration no longer affects the coordinator refresh rate.
+- `_async_options_updated` simplified — no longer adjusts `update_interval`; just calls `async_refresh()`.
+- `cancel_window_refresh` replaced by `cancel_hourly_schedule` (called on entry unload to deregister the `async_track_utc_time_change` listener).
+- **Dynamic poll interval and weather TTL driven by Mow Cycle Duration** — superseded by the fixed hourly :50 schedule above; this entry is no longer applicable.
 - **`past_rainfall_in` attribute on `sensor.rainfall`** — exposes the rain that has actually fallen today (summed from past hourly slots) alongside the full-day forecast total and current surface moisture estimate, making it easy to debug wet-grass state.
 - **Comprehensive logging** — coordinator now logs at `INFO` level when mow events are recorded (including which caller, timestamp, and prior session state) and when weather data is fetched (GDD, daily precip, past rain, slot count, humidity). Debug-level logs cover wet-grass calculation inputs/outputs and every compute cycle result, enabling diagnosis without restarting HA.
 - **`past_rainfall` key in coordinator return dict** — downstream entities and future attributes have direct access to past-only rainfall without re-summing hourly slots.
 
 ### Changed
-- `WEATHER_UPDATE_INTERVAL` constant removed from `const.py`; the TTL is now computed dynamically as `max(3600, mow_cycle_duration_hours / 2 * 3600)` on every poll check.
 - Button `Mark Mowed` docstring updated to clarify it is for manual mowing and now always clears any active session.
 - Button `Mow Complete` docstring updated to clarify it is for the automated mowing workflow; both buttons are now safe to press regardless of session state.
 - `sensor.rainfall` `extra_state_attributes` updated: exposes `past_rainfall_in` and `current_surface_moisture_in` to aid troubleshooting of `Grass Wet` / `Mow Not Advised` state.

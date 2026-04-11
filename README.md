@@ -142,10 +142,11 @@ This section describes how each input and output entity is intended to be connec
 | `binary_sensor.mow_recommended` | Conditions are right to mow (growth threshold met + either dry or no dry window coming) | Send a push notification; turn on a dashboard indicator; trigger a mower dispatch |
 | `binary_sensor.mow_overdue` | Max days exceeded regardless of growth or wet state | Escalate: force-start the mower and send an urgent alert |
 | `binary_sensor.grass_wet` | Current conditions are too wet to mow | Suppress mow-start automations; optionally notify |
+| `binary_sensor.mow_not_advised` | Currently wet **or** any forecast hour within the mow cycle window is rainy/humid — single go/no-go for manual mowing | Block manual mow start; display a warning on a dashboard |
 | `binary_sensor.dry_mow_window_soon` | A dry window long enough for a full mow cycle is coming | Schedule the mower to start at `sensor.next_dry_mow_window` |
 | `sensor.next_dry_mow_window` | Timestamp of the next suitable dry window | Use in a `time` trigger or `template` trigger to start the mower at precisely the right time |
 | `sensor.current_grass_height` | Estimated current height in inches | Display on a dashboard; use in a condition to guard other automations |
-| `sensor.growth_since_mow` | Inches of growth since the last mow | Display on a dashboard; useful for fine-tuning threshold options |
+| `sensor.growth_since_last_mow` | Inches of growth since the last mow | Display on a dashboard; useful for fine-tuning threshold options |
 
 ### Wiring guide — recommended setup
 
@@ -267,7 +268,7 @@ title: Lawn Status
 entities:
   - entity: sensor.current_grass_height
     name: Current Height
-  - entity: sensor.growth_since_mow
+  - entity: sensor.growth_since_last_mow
     name: Growth Since Mow
   - entity: sensor.days_since_last_mow
     name: Days Since Mow
@@ -319,7 +320,7 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 |---|---|---|
 | `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
 | `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
-| `sensor.growth_since_mow` | in | Estimated grass growth above the mowed-to height since the last mow. Compared against the normal growth trigger and force-mow threshold to drive `mow_recommended`. |
+| `sensor.growth_since_last_mow` | in | Estimated grass growth above the mowed-to height since the last mow. Compared against the normal growth trigger and force-mow threshold to drive `mow_recommended`. |
 | `sensor.next_dry_mow_window` | timestamp | Start time of the next forecasted dry window long enough to complete a full mow cycle, or `unknown` if none found in the lookahead period. |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's total forecast precipitation from the weather entity (full-day total; drives the rain growth multiplier). Attributes expose `past_rainfall_in` (rain already fallen, used for wet-grass detection) and `current_surface_moisture_in` |

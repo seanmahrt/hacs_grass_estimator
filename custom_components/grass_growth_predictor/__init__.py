@@ -29,6 +29,7 @@ MARK_MOWED_SCHEMA = vol.Schema(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Grass Growth Predictor from a config entry."""
     coordinator = GrassGrowthCoordinator(hass, entry)
+    coordinator.setup_hourly_schedule()
     await coordinator.async_setup()
     await coordinator.async_config_entry_first_refresh()
 
@@ -52,20 +53,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    entry.async_on_unload(coordinator.cancel_hourly_schedule)
 
     return True
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the coordinator when options change."""
+    """Refresh the coordinator when options change."""
     coordinator: GrassGrowthCoordinator = hass.data[DOMAIN][entry.entry_id]
-    new_interval = coordinator._compute_poll_interval()
-    if coordinator.update_interval != new_interval:
-        _LOGGER.info(
-            "Mow cycle duration changed; updating poll interval to %s",
-            new_interval,
-        )
-        coordinator.update_interval = new_interval
     await coordinator.async_refresh()
 
 

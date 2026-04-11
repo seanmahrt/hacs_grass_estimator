@@ -4,13 +4,15 @@ from __future__ import annotations
 import asyncio
 import math
 import logging
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_utc_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -93,21 +95,62 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._weather_fetched_at: datetime | None = None
         # Rainfall that has actually fallen so far today (summed from past hourly slots).
-        # Separate from the full daily forecast total used for the growth-rate rain factor.
+        # Separate from the full daily forecast total used for the growth-rate rain
+        # factor.
         self._past_rainfall_in: float = 0.0
+
+        # Hourly schedule: unsub handle for the :50-past-each-hour refresh.
+        self._hourly_schedule_unsub: Callable[[], None] | None = None
 
         # Nearest SCAN station (resolved once, then cached)
         self._scan_station_triplet: str | None = None
         self._scan_station_resolved: bool = False
 
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            # Poll interval scales with the mow cycle: every mow_cycle_h / 2 hours
-            # (minimum 1 h). This is recomputed when options change.
-            update_interval=self._compute_poll_interval(),
+        # No automatic interval-based polling — driven entirely by the
+        # hourly :50 schedule registered in async_setup.
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=None)
+
+    # ------------------------------------------------------------------
+    # Hourly schedule
+    # ------------------------------------------------------------------
+
+    # Minute past the hour at which the hourly refresh fires.
+    # Running at :50 ensures forecast data is current before each new
+    # hourly forecast boundary (dry-window starts land on the :00).
+    _HOURLY_REFRESH_MINUTE = 50
+
+    def setup_hourly_schedule(self) -> None:
+        """Register a recurring refresh at :50 past every hour (UTC).
+
+        Drives all periodic updates; replaces the coordinator's built-in
+        interval-based polling so updates are always pre-aligned to the
+        top of the hour rather than drifting relative to startup time.
+        Called from async_setup so the schedule is active before the
+        first coordinator refresh.
+        """
+        if self._hourly_schedule_unsub is not None:
+            return
+
+        @callback
+        def _do_refresh(_fired_at: datetime) -> None:
+            self.hass.async_create_task(self.async_refresh())
+
+        self._hourly_schedule_unsub = async_track_utc_time_change(
+            self.hass,
+            _do_refresh,
+            minute=self._HOURLY_REFRESH_MINUTE,
+            second=0,
         )
+        _LOGGER.info(
+            "Hourly refresh scheduled at :%02d past each hour (UTC)",
+            self._HOURLY_REFRESH_MINUTE,
+        )
+
+    def cancel_hourly_schedule(self) -> None:
+        """Cancel the hourly refresh (called on entry unload)."""
+        if self._hourly_schedule_unsub is not None:
+            self._hourly_schedule_unsub()
+            self._hourly_schedule_unsub = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -117,21 +160,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _cfg(self) -> dict[str, Any]:
         """Merged config with options taking priority over entry data."""
         return {**self.entry.data, **self.entry.options}
-
-    def _compute_poll_interval(self) -> timedelta:
-        """Return update_interval derived from the mow cycle setting.
-
-        Poll every mow_cycle_duration_hours / 2, floored at 1 hour so that
-        short mow cycles don't cause excessive weather API usage.
-        """
-        mow_cycle_h = float(
-            self._cfg.get(
-                CONF_MOW_CYCLE_DURATION_HOURS,
-                DEFAULT_MOW_CYCLE_DURATION_HOURS,
-            )
-        )
-        hours = max(1.0, mow_cycle_h / 2.0)
-        return timedelta(hours=hours)
 
     @property
     def last_mow_timestamp(self) -> datetime | None:
@@ -166,20 +194,18 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if stored:
             self._stored_data = dict(stored)
             _LOGGER.info(
-                "Loaded stored mow data: last_mow=%s, mowed_to_height=%.1f in, session_active=%s",
+                "Loaded stored mow data: last_mow=%s, "
+                "mowed_to_height=%.1f in, session_active=%s",
                 stored.get(STORE_LAST_MOW_TIMESTAMP, "none"),
-                float(stored.get(STORE_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT)),
+                float(stored.get(
+                    STORE_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT
+                )),
                 stored.get(STORE_MOW_SESSION_ACTIVE, False),
             )
         else:
-            _LOGGER.info("No stored mow data found; starting with no prior mow recorded")
-        _LOGGER.info(
-            "Poll interval: %s (mow_cycle=%.1f h \u00f7 2; min 1 h)",
-            self.update_interval,
-            float(self._cfg.get(
-                CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS
-            )),
-        )
+            _LOGGER.info(
+                "No stored mow data found; starting with no prior mow recorded"
+            )
 
     async def async_mark_mowed(self, mowed_to_height: float | None = None) -> None:
         """Record a mowing event; persist and refresh immediately.
@@ -239,19 +265,14 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._weather_needs_update(now):
             await self._read_weather_from_ha()
         else:
-            age_min = (now - self._weather_fetched_at).total_seconds() / 60.0  # type: ignore[operator]
-            mow_cycle_h = float(
-                self._cfg.get(
-                    CONF_MOW_CYCLE_DURATION_HOURS,
-                    DEFAULT_MOW_CYCLE_DURATION_HOURS,
-                )
+            age_min = (
+                (now - self._weather_fetched_at).total_seconds() / 60.0  # type: ignore[operator]
             )
-            ttl_min = max(60.0, mow_cycle_h / 2.0 * 60.0)
             _LOGGER.debug(
-                "Weather data is fresh (%.0f / %.0f min); "
+                "Weather data is fresh (%.0f / %d min); "
                 "skipping weather.get_forecasts calls",
                 age_min,
-                ttl_min,
+                self._WEATHER_TTL_S // 60,
             )
 
         if self._soil_moisture_needs_update(now):
@@ -276,19 +297,17 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             (now - self._soil_temp_fetched_at).total_seconds() >= SOIL_UPDATE_INTERVAL
         )
 
+    # Weather TTL: 55 min — slightly shorter than the 60-min hourly schedule
+    # so that any manual refresh or options change always fetches fresh data,
+    # and each :50 tick reliably picks up a new forecast.
+    _WEATHER_TTL_S: int = 55 * 60
+
     def _weather_needs_update(self, now: datetime) -> bool:
         if self._weather_fetched_at is None:
             return True
-        mow_cycle_h = float(
-            self._cfg.get(
-                CONF_MOW_CYCLE_DURATION_HOURS,
-                DEFAULT_MOW_CYCLE_DURATION_HOURS,
-            )
-        )
-        ttl_s = max(3_600.0, mow_cycle_h / 2.0 * 3_600.0)
         return (
             now - self._weather_fetched_at
-        ).total_seconds() >= ttl_s
+        ).total_seconds() >= self._WEATHER_TTL_S
 
     # ------------------------------------------------------------------
     # Fetchers

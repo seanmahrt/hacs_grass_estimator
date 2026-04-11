@@ -33,7 +33,7 @@
 
 ## Overview
 
-The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a polling coordinator every **2 hours** to refresh data, and exposes **ten sensor entities**, **five binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
+The integration estimates current grass height by accumulating a calculated daily growth rate over the time elapsed since the last mow. It is configured once via the UI config flow, runs a recurring coordinator refresh at **:50 past every hour (UTC)** to refresh data, and exposes **ten sensor entities**, **five binary sensors**, a **switch**, **two buttons**, and a `mark_mowed` service.
 
 Weather data (GDD, rainfall, hourly humidity/precipitation) is read from a configured HA weather entity via `weather.get_forecasts` — no direct OWM API calls are made by this integration.
 
@@ -48,7 +48,7 @@ Weather data (GDD, rainfall, hourly humidity/precipitation) is read from a confi
 | `sensor.current_grass_height` | in | Estimated current grass height |
 | `sensor.daily_growth_rate` | in/day | Fully computed daily growth rate (all active factors applied) |
 | `sensor.days_since_last_mow` | d | Fractional days elapsed since the last mow |
-| `sensor.growth_since_mow` | in | Grass growth above the mowed-to height since the last mow (compared against normal growth trigger and force-mow threshold) |
+| `sensor.growth_since_last_mow` | in | Grass growth above the mowed-to height since the last mow (compared against normal growth trigger and force-mow threshold) |
 | `sensor.next_dry_mow_window` | timestamp | Start time of the next forecasted dry window long enough for a full mow cycle; `unknown` if none found in the lookahead period |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
@@ -56,7 +56,7 @@ Weather data (GDD, rainfall, hourly humidity/precipitation) is read from a confi
 | `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
 | `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
 
-All sensors share the same **Grass Growth Predictor** device and update together on the 12-hour coordinator cycle.
+All sensors share the same **Grass Growth Predictor** device and update together on the hourly coordinator refresh.
 
 ### Binary Sensors
 
@@ -138,7 +138,7 @@ sequenceDiagram
     Coord->>Store: load persisted data\n(last mow, weather cache, fetched_at)
     Coord->>HA: async_config_entry_first_refresh()
 
-    loop Every 2 hours (coordinator poll)
+    loop Every hour at :50 (UTC) — async_track_utc_time_change
         HA->>Coord: _async_update_data()
         Coord->>HAWeather: weather.get_forecasts(daily)
         HAWeather-->>Coord: temperature high/low → GDD\nprecipitation → rainfall (unit-aware)
@@ -330,7 +330,7 @@ temp > 95         →  0.45                           (peak heat stress)
 
 ## Mow Scheduling Logic
 
-All scheduling binary sensors are recomputed on every coordinator poll (every 2 hours) from the latest hourly forecast and current state.
+All scheduling binary sensors are recomputed on every coordinator refresh (hourly at :50 UTC) from the latest hourly forecast and current state.
 
 ### Evaporation Model
 
@@ -461,11 +461,11 @@ mow_recommended =
 
 | Data source | Fetch interval | Notes |
 |---|---|---|
-| HA weather entity (daily forecast: GDD + rainfall) | 1 hour minimum (`WEATHER_UPDATE_INTERVAL`) | TTL-guarded: `weather.get_forecasts` is only called when cached data is ≥ 1 hour old. Refresh calls triggered by `mark_mowed` or `mow_complete` reuse the cached weather data if it is still fresh, preventing runaway API usage. |
-| HA weather entity (hourly forecast: humidity + rain per hour) | 1 hour minimum | Fetched in the same guarded call as the daily forecast. Past hourly slots (slots whose datetime ≤ now) are summed to `past_rainfall_in` for wet-grass detection; future slots are used only for dry-window scheduling. |
+| HA weather entity (daily forecast: GDD + rainfall) | 55 min TTL | TTL-guarded: `weather.get_forecasts` is only called when cached data is ≥ 55 min old. The 55 min TTL is slightly shorter than the hourly schedule so every `:50` tick reliably picks up a fresh forecast. Refreshes triggered by `mark_mowed` or `mow_complete` reuse cached weather data if it is still fresh. |
+| HA weather entity (hourly forecast: humidity + rain per hour) | 55 min TTL | Fetched in the same guarded call as the daily forecast. Past hourly slots (slots whose datetime ≤ now) are summed to `past_rainfall_in` for wet-grass detection; future slots are used only for dry-window scheduling. |
 | National Soil Moisture Network (soil moisture %) | 12 hours | In-memory cache only |
 | USDA SCAN (2-inch soil temperature) | 12 hours | Station triplet resolved once, then cached in memory |
-| Coordinator poll (height calculation + all sensor updates) | 2 hours | Wakes every 2 h; weather data only re-fetched when 1 h TTL has elapsed; soil data only when 12 h TTL has elapsed |
+| Coordinator refresh (height calculation + all sensor updates) | Hourly at :50 UTC | Driven by `async_track_utc_time_change` (minute=50, second=0). Fires 10 minutes before each new hourly forecast boundary so sensor state is current when dry-window automations trigger at the top of the hour. Weather data only re-fetched when 55 min TTL has elapsed; soil data only when 12 h TTL has elapsed. |
 
 ---
 
