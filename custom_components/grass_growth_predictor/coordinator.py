@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import HomeAssistant, callback
@@ -70,6 +71,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_SCAN_SOIL_TEMP_DEPTH_IN = 2
+_UPSTREAM_ALERT_PREFIX = f"{DOMAIN}_upstream"
+
 
 class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Manage fetching and computing grass height data."""
@@ -105,6 +109,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Nearest SCAN station (resolved once, then cached)
         self._scan_station_triplet: str | None = None
         self._scan_station_resolved: bool = False
+        self._active_upstream_alerts: set[str] = set()
 
         # No automatic interval-based polling — driven entirely by the
         # hourly :50 schedule registered in async_setup.
@@ -206,6 +211,61 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info(
                 "No stored mow data found; starting with no prior mow recorded"
             )
+
+    async def async_clear_upstream_notifications(self) -> None:
+        """Dismiss any outstanding upstream notifications for this entry."""
+        for source in tuple(self._active_upstream_alerts):
+            persistent_notification.async_dismiss(
+                self.hass,
+                self._upstream_notification_id(source),
+            )
+        self._active_upstream_alerts.clear()
+
+    def _upstream_notification_id(self, source: str) -> str:
+        """Return a stable notification id for an upstream source."""
+        return f"{_UPSTREAM_ALERT_PREFIX}_{self.entry.entry_id}_{source}"
+
+    async def _notify_upstream_failure(
+        self,
+        source: str,
+        service_name: str,
+        detail: str,
+        fallback_description: str,
+    ) -> None:
+        """Create a persistent notification for an upstream outage once."""
+        if source in self._active_upstream_alerts:
+            return
+
+        title = f"{self.entry.title}: upstream service issue"
+        message = (
+            f"Grass Growth Predictor could not refresh {service_name}. "
+            f"It will keep using {fallback_description} until the source "
+            f"recovers.\n\n"
+            f"Details: {detail}"
+        )
+        persistent_notification.async_create(
+            self.hass,
+            message,
+            title=title,
+            notification_id=self._upstream_notification_id(source),
+        )
+        self._active_upstream_alerts.add(source)
+
+    async def _clear_upstream_failure(
+        self,
+        source: str,
+        service_name: str,
+    ) -> None:
+        """Dismiss a previously created upstream outage notification."""
+        if source not in self._active_upstream_alerts:
+            return
+
+        persistent_notification.async_dismiss(
+            self.hass,
+            self._upstream_notification_id(source),
+        )
+        self._active_upstream_alerts.remove(source)
+        _LOGGER.info("%s recovered; cleared upstream notification", service_name)
 
     async def async_mark_mowed(self, mowed_to_height: float | None = None) -> None:
         """Record a mowing event; persist and refresh immediately.
@@ -329,9 +389,19 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning(
                 "Weather entity %s is unavailable; using cached weather data", weather_entity_id
             )
+            await self._notify_upstream_failure(
+                "weather_entity",
+                f"weather entity {weather_entity_id}",
+                "Entity state is unavailable or unknown",
+                "cached weather data or built-in defaults",
+            )
             if self._weather_data is None:
                 self._weather_data = {"gdd": 10.0, "rainfall": 0.0}
             return
+        await self._clear_upstream_failure(
+            "weather_entity",
+            f"weather entity {weather_entity_id}",
+        )
 
         attrs = state.attributes
         temp_unit = attrs.get("temperature_unit", "°F")
@@ -369,6 +439,10 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             rain_inches = rain_raw * 0.03937 if precip_unit == "mm" else rain_raw
 
             self._weather_data = {"gdd": gdd, "rainfall": rain_inches}
+            await self._clear_upstream_failure(
+                "weather_daily",
+                f"daily forecast for {weather_entity_id}",
+            )
             _LOGGER.debug(
                 "Daily forecast from %s: GDD=%.1f °F·d, daily_precip=%.3f in (t_high=%.1f, t_low=%.1f)",
                 weather_entity_id, gdd, rain_inches, t_high, t_low,
@@ -376,6 +450,12 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to read daily forecast from %s: %s", weather_entity_id, err)
+            await self._notify_upstream_failure(
+                "weather_daily",
+                f"daily forecast for {weather_entity_id}",
+                str(err),
+                "cached weather data or built-in defaults",
+            )
             if self._weather_data is None:
                 self._weather_data = {"gdd": 10.0, "rainfall": 0.0}
 
@@ -422,6 +502,10 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._hourly_forecast = slots
             self._past_rainfall_in = past_rain_in
+            await self._clear_upstream_failure(
+                "weather_hourly",
+                f"hourly forecast for {weather_entity_id}",
+            )
             _LOGGER.debug(
                 "Hourly forecast from %s: %d slots, past_rain_in=%.3f in "
                 "(daily_total=%.3f in; %d slots are in the past)",
@@ -432,6 +516,12 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to read hourly forecast from %s: %s", weather_entity_id, err)
+            await self._notify_upstream_failure(
+                "weather_hourly",
+                f"hourly forecast for {weather_entity_id}",
+                str(err),
+                "cached hourly data",
+            )
 
         self._weather_fetched_at = dt_util.now()
         _LOGGER.info(
@@ -462,9 +552,19 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             moisture_pct = _parse_nsm_moisture(payload)
             self._soil_moisture_data = {"soil_moisture": moisture_pct}
             self._soil_moisture_fetched_at = dt_util.now()
+            await self._clear_upstream_failure(
+                "soil_moisture",
+                "National Soil Moisture Network",
+            )
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Soil moisture fetch failed: %s", err)
+            await self._notify_upstream_failure(
+                "soil_moisture",
+                "National Soil Moisture Network",
+                str(err),
+                "cached soil moisture or the neutral 45% default",
+            )
             if self._soil_moisture_data is None:
                 self._soil_moisture_data = {"soil_moisture": OPTIMAL_SOIL_MOISTURE_PCT}
 
@@ -490,8 +590,11 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             today = dt_util.now().strftime("%Y-%m-%d")
             params = {
                 "stationTriplets": self._scan_station_triplet,
-                "elementCd": "STO",
-                "ordinal": 2,   # 2-inch depth
+                # USDA AWDB v1 data now requires the combined `elements`
+                # parameter rather than top-level `elementCd` / `ordinal`.
+                # Request all STO depths and let the parser prefer 2 in,
+                # falling back to the closest reported depth for the station.
+                "elements": "STO:*",
                 "beginDate": today,
                 "endDate": today,
                 "duration": "DAILY",
@@ -505,9 +608,19 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soil_temp = _parse_scan_soil_temp(data)
             self._soil_temp_data = {"soil_temperature": soil_temp}
             self._soil_temp_fetched_at = dt_util.now()
+            await self._clear_upstream_failure(
+                "soil_temperature",
+                "USDA SCAN soil temperature",
+            )
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("SCAN soil temperature fetch failed: %s", err)
+            await self._notify_upstream_failure(
+                "soil_temperature",
+                "USDA SCAN soil temperature",
+                str(err),
+                "cached soil temperature or the neutral 65 F default",
+            )
             if self._soil_temp_data is None:
                 self._soil_temp_data = {"soil_temperature": OPTIMAL_SOIL_TEMP_F}
 
@@ -529,10 +642,20 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(stations, list) and stations:
                 triplet = stations[0].get("stationTriplet")
                 _LOGGER.debug("Nearest SCAN station: %s", triplet)
+                await self._clear_upstream_failure(
+                    "scan_station_lookup",
+                    "USDA SCAN station lookup",
+                )
                 return triplet
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("SCAN station lookup failed: %s", err)
+            await self._notify_upstream_failure(
+                "scan_station_lookup",
+                "USDA SCAN station lookup",
+                str(err),
+                "cached station information or the neutral 65 F soil-temperature default",
+            )
 
         return None
 
@@ -932,13 +1055,74 @@ def _parse_nsm_moisture(payload: Any) -> float:
 
 def _parse_scan_soil_temp(data: Any) -> float:
     """Extract soil temperature from USDA AWDB REST API data response."""
-    if isinstance(data, list) and data:
-        record = data[0]
-        if isinstance(record, dict):
-            values = record.get("values") or []
-            if values and values[0] is not None:
-                try:
-                    return float(values[0])
-                except (TypeError, ValueError):
-                    pass
+    candidates = _scan_data_records(data)
+    best_depth_distance: float | None = None
+    best_value: float | None = None
+
+    for record in candidates:
+        station_element = record.get("stationElement")
+        if isinstance(station_element, dict):
+            element_code = station_element.get("elementCode")
+            if element_code not in (None, "STO"):
+                continue
+            depth = station_element.get("heightDepth")
+        else:
+            depth = None
+
+        value = _scan_first_value(record.get("values"))
+        if value is None:
+            continue
+
+        depth_distance = _scan_depth_distance(depth)
+        if best_value is None or best_depth_distance is None:
+            best_depth_distance = depth_distance
+            best_value = value
+        elif depth_distance < best_depth_distance:
+            best_depth_distance = depth_distance
+            best_value = value
+
+        if depth_distance == 0:
+            return value
+
+    if best_value is not None:
+        return best_value
+
     return OPTIMAL_SOIL_TEMP_F
+
+
+def _scan_data_records(data: Any) -> list[dict[str, Any]]:
+    """Normalize USDA AWDB data responses into a flat list of data records."""
+    if isinstance(data, list):
+        return [record for record in data if isinstance(record, dict)]
+
+    if isinstance(data, dict):
+        nested = data.get("data")
+        if isinstance(nested, list):
+            return [record for record in nested if isinstance(record, dict)]
+
+    return []
+
+
+def _scan_first_value(values: Any) -> float | None:
+    """Return the first non-null numeric USDA AWDB value."""
+    if not isinstance(values, list):
+        return None
+
+    for item in values:
+        candidate = item.get("value") if isinstance(item, dict) else item
+        if candidate is None:
+            continue
+        try:
+            return float(candidate)
+        except (TypeError, ValueError):
+            continue
+
+    return None
+
+
+def _scan_depth_distance(depth: Any) -> float:
+    """Score how close a station element depth is to the preferred 2-inch reading."""
+    try:
+        return float(abs(int(depth) - _SCAN_SOIL_TEMP_DEPTH_IN))
+    except (TypeError, ValueError):
+        return math.inf

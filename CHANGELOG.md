@@ -21,11 +21,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- **USDA SCAN soil temperature fetch restored** — the AWDB `/services/v1/data` endpoint now requires `elements=` instead of the older `elementCd` / `ordinal` query parameters. The integration now requests `STO:*`, prefers a 2-inch soil-temperature reading, and falls back to the nearest reported STO depth if the station does not publish exactly 2-inch data. The parser also now accepts the current object-based AWDB `values[].value` payload shape.
 - **Documentation: entity references updated to match HA display names** — `sensor.growth_since_mow` corrected to `sensor.growth_since_last_mow` throughout README and ARCHITECTURE (entity `_attr_name` is "Growth Since Last Mow"). Added missing `binary_sensor.mow_not_advised` to the README Outputs quick-reference table.
 - **`Mow Not Advised` / `Grass Wet` stuck ON due to future-rain attribution** — `current_moisture_in` was previously computed from the daily forecast total (including rain forecast for later today/tonight). It now uses only `past_rainfall_in`: the sum of precipitation from hourly forecast slots whose datetime is already in the past. This prevents a heavy evening forecast from marking the grass as wet all morning.
 - **`Mark Mowed` left `Mow Session Active` switch ON** — `async_mark_mowed` now sets `mow_session_active = False` before saving, matching the behaviour of `async_complete_mow`. Both mow-recording paths clear the session unconditionally.
 
 ### Added
+- **Persistent notifications for upstream outages** — when the configured weather entity, weather forecast service, National Soil Moisture Network, USDA SCAN station lookup, or USDA SCAN soil-temperature fetch fails, the integration now creates a Home Assistant persistent notification on the first failure and dismisses it automatically once that source recovers.
 - **Hourly refresh aligned to :50 past each hour** — the coordinator no longer uses an interval-based auto-poll. Instead, `async_track_utc_time_change` (minute=50, second=0) drives all periodic refreshes. This guarantees sensor state is updated 10 minutes before each hourly forecast boundary, so dry-window automations that trigger at the top of the hour always see current data. The weather TTL is fixed at 55 minutes (down from `max(1 h, mow_cycle_h / 2)`) so every `:50` tick reliably fetches a fresh forecast. Manual refreshes (`mark_mowed`, `mow_complete`, options save) continue to work independently and still respect the 55 min weather TTL to avoid redundant API calls.
 
 ### Changed

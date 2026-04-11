@@ -37,6 +37,8 @@ The integration estimates current grass height by accumulating a calculated dail
 
 Weather data (GDD, rainfall, hourly humidity/precipitation) is read from a configured HA weather entity via `weather.get_forecasts` — no direct OWM API calls are made by this integration.
 
+When an upstream dependency fails, the coordinator raises a Home Assistant persistent notification once per source (`weather entity`, `daily forecast`, `hourly forecast`, `soil moisture`, `SCAN station lookup`, `soil temperature`) and dismisses it automatically after a successful refresh.
+
 ---
 
 ## Entities
@@ -103,6 +105,7 @@ flowchart TD
         WEATHER["HA Weather Entity\n(e.g. weather.openweathermap)\ndaily + hourly forecasts"]
         NSM["National Soil Moisture Network\nVolumetric soil moisture %"]
         SCAN["USDA SCAN REST API\nNearby station lookup\n2-inch soil temperature"]
+        PN["Persistent Notification\nupstream failures / recovery"]
     end
 
     CF -->|"stores config & options"| INIT
@@ -116,6 +119,7 @@ flowchart TD
     COORD -->|"weather.get_forecasts (daily + hourly)"| WEATHER
     COORD -->|"fetch if TTL elapsed"| NSM
     COORD -->|"resolve once, then fetch"| SCAN
+    COORD -->|"create/dismiss"| PN
     SVC -->|"async_mark_mowed()\nthen async_refresh()"| COORD
     SWITCH -->|"async_start/end_mow_session()"| COORD
     BUTTON -->|"async_mark_mowed() or async_complete_mow()"| COORD
@@ -152,7 +156,7 @@ sequenceDiagram
         alt soil temp TTL elapsed
             Coord->>SCAN: GET nearest station (radius 200 mi, once)
             SCAN-->>Coord: stationTriplet
-            Coord->>SCAN: GET STO element, 2-inch depth, daily
+            Coord->>SCAN: GET elements=STO:* daily
             SCAN-->>Coord: soil temperature °F
         end
         Coord->>Coord: _compute()
@@ -199,6 +203,8 @@ flowchart LR
 ```
 
 Each multiplier can be individually **enabled or disabled** via integration options. Disabled factors default to `1.0` (no effect).
+
+The SCAN soil-temperature fetch uses the USDA AWDB `elements` query parameter (`STO:*`) because the legacy `elementCd` / `ordinal` request form is no longer accepted. The parser prefers a 2-inch depth reading when available and otherwise falls back to the closest reported STO depth for the selected station.
 
 ### Height Formula
 
@@ -465,6 +471,7 @@ mow_recommended =
 | HA weather entity (hourly forecast: humidity + rain per hour) | 55 min TTL | Fetched in the same guarded call as the daily forecast. Past hourly slots (slots whose datetime ≤ now) are summed to `past_rainfall_in` for wet-grass detection; future slots are used only for dry-window scheduling. |
 | National Soil Moisture Network (soil moisture %) | 12 hours | In-memory cache only |
 | USDA SCAN (2-inch soil temperature) | 12 hours | Station triplet resolved once, then cached in memory |
+| Persistent notifications for upstream failures | Event-driven | Created on first failure per source, dismissed automatically after recovery |
 | Coordinator refresh (height calculation + all sensor updates) | Hourly at :50 UTC | Driven by `async_track_utc_time_change` (minute=50, second=0). Fires 10 minutes before each new hourly forecast boundary so sensor state is current when dry-window automations trigger at the top of the hour. Weather data only re-fetched when 55 min TTL has elapsed; soil data only when 12 h TTL has elapsed. |
 
 ---

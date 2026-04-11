@@ -53,9 +53,10 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Growing Degree Days** | Reads daily high/low temperature from the HA weather entity to compute GDD-based growth acceleration |
 | **Rainfall factor** | Today's precipitation from the HA weather entity boosts the daily growth rate |
 | **Soil moisture factor** | National Soil Moisture Network API adjusts growth for wet/dry soil |
-| **Soil temperature factor** | Nearest USDA SCAN station soil temperature scales growth |
+| **Soil temperature factor** | Nearest USDA SCAN station soil temperature scales growth, using the USDA AWDB `elements` API and preferring the 2-inch depth with fallback to the nearest reported depth |
 | **Seasonal factor** | Month-based multiplier tuned for Northern Hemisphere cool-season turf |
 | **Toggle multipliers** | Each factor can be individually enabled or disabled |
+| **Upstream outage notifications** | Creates a Home Assistant persistent notification the first time a weather, soil moisture, or SCAN fetch fails, and clears it automatically after recovery |
 | **Automated mower control** | Switch output to trigger a mow session, binary sensors for recommended/overdue status, growth-based trigger with configurable min/max day bounds and growth thresholds |
 | **Wet-grass scheduling** | Skips mowing when grass is wet (recent rainfall or high humidity/dew from the HA weather entity hourly forecast). A configurable force-mow threshold overrides the wet check when the grass has grown too long. A dry-window lookahead scans the hourly forecast to find a suitable mow window before falling back to mowing anyway. |
 
