@@ -33,7 +33,6 @@ DEFAULT_ENABLE_SOIL_TEMP = True
 SOIL_UPDATE_INTERVAL = 43_200       # 12 h; independent of mow cycle
 
 # ----- API base URLs (soil services only; weather data comes via HA weather entity) -----
-NSM_BASE_URL = "https://nationalsoilmoisture.com/test/data_api/"
 SCAN_STATIONS_URL = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1/stations"
 SCAN_DATA_URL = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1/data"
 

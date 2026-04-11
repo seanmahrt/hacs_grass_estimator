@@ -53,7 +53,6 @@ from .const import (
     DEFAULT_WET_RAIN_THRESHOLD_IN,
     DOMAIN,
     GDD_BASE_TEMP_F,
-    NSM_BASE_URL,
     OPTIMAL_GDD_DAILY,
     OPTIMAL_SOIL_MOISTURE_PCT,
     OPTIMAL_SOIL_TEMP_F,
@@ -71,6 +70,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_SCAN_SOIL_MOISTURE_DEPTH_IN = 2
 _SCAN_SOIL_TEMP_DEPTH_IN = 2
 _UPSTREAM_ALERT_PREFIX = f"{DOMAIN}_upstream"
 
@@ -536,32 +536,61 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _fetch_soil_moisture(self, session) -> None:
-        """Fetch volumetric soil moisture from National Soil Moisture Network."""
+        """Fetch volumetric soil moisture from the nearest USDA SCAN station."""
         cfg = self._cfg
         lat = cfg.get(CONF_LATITUDE, self.hass.config.latitude)
         lon = cfg.get(CONF_LONGITUDE, self.hass.config.longitude)
 
-        params = {"lat": lat, "lon": lon, "depth": 5}
-
         try:
-            async with asyncio.timeout(30):
-                async with session.get(NSM_BASE_URL, params=params) as resp:
-                    resp.raise_for_status()
-                    payload = await resp.json(content_type=None)
+            if not self._scan_station_resolved:
+                self._scan_station_triplet = await self._find_scan_station(
+                    session,
+                    lat,
+                    lon,
+                )
+                self._scan_station_resolved = True
 
-            moisture_pct = _parse_nsm_moisture(payload)
+            if not self._scan_station_triplet:
+                _LOGGER.warning(
+                    "No SCAN station found within 200 miles of %.4f, %.4f",
+                    lat,
+                    lon,
+                )
+                if self._soil_moisture_data is None:
+                    self._soil_moisture_data = {
+                        "soil_moisture": OPTIMAL_SOIL_MOISTURE_PCT
+                    }
+                return
+
+            params = {
+                "stationTriplets": self._scan_station_triplet,
+                # USDA SCAN exposes soil moisture as daily SMS values at
+                # multiple depths in inches below ground. Request all depths
+                # and prefer the depth closest to 5 cm (~2 in).
+                "elements": "SMS:*",
+                "beginDate": "-7",
+                "endDate": "0",
+                "duration": "DAILY",
+            }
+
+            async with asyncio.timeout(30):
+                async with session.get(SCAN_DATA_URL, params=params) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json(content_type=None)
+
+            moisture_pct = _parse_scan_soil_moisture(data)
             self._soil_moisture_data = {"soil_moisture": moisture_pct}
             self._soil_moisture_fetched_at = dt_util.now()
             await self._clear_upstream_failure(
                 "soil_moisture",
-                "National Soil Moisture Network",
+                "USDA SCAN soil moisture",
             )
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Soil moisture fetch failed: %s", err)
             await self._notify_upstream_failure(
                 "soil_moisture",
-                "National Soil Moisture Network",
+                "USDA SCAN soil moisture",
                 str(err),
                 "cached soil moisture or the neutral 45% default",
             )
@@ -587,7 +616,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._soil_temp_data = {"soil_temperature": OPTIMAL_SOIL_TEMP_F}
                 return
 
-            today = dt_util.now().strftime("%Y-%m-%d")
             params = {
                 "stationTriplets": self._scan_station_triplet,
                 # USDA AWDB v1 data now requires the combined `elements`
@@ -595,8 +623,8 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Request all STO depths and let the parser prefer 2 in,
                 # falling back to the closest reported depth for the station.
                 "elements": "STO:*",
-                "beginDate": today,
-                "endDate": today,
+                "beginDate": "-7",
+                "endDate": "0",
                 "duration": "DAILY",
             }
 
@@ -1018,43 +1046,34 @@ def _soil_temp_factor(temp_f: float) -> float:
     return 0.45
 
 
-# ------------------------------------------------------------------
-# API response parsers
-# ------------------------------------------------------------------
-
-def _parse_nsm_moisture(payload: Any) -> float:
-    """Best-effort extraction of soil moisture % from NSM API payload."""
-    candidate_keys = ("soil_moisture_pct", "moisture_pct", "value", "moisture")
-
-    if isinstance(payload, dict):
-        for key in candidate_keys:
-            val = payload.get(key)
-            if val is not None:
-                m = float(val)
-                return m * 100 if m < 1.5 else m
-
-        nested = payload.get("data")
-        if isinstance(nested, dict):
-            for key in candidate_keys:
-                val = nested.get(key)
-                if val is not None:
-                    m = float(val)
-                    return m * 100 if m < 1.5 else m
-
-    if isinstance(payload, list) and payload:
-        first = payload[0]
-        if isinstance(first, dict):
-            for key in candidate_keys:
-                val = first.get(key)
-                if val is not None:
-                    m = float(val)
-                    return m * 100 if m < 1.5 else m
-
-    return OPTIMAL_SOIL_MOISTURE_PCT
+def _parse_scan_soil_moisture(data: Any) -> float:
+    """Extract soil moisture from USDA AWDB REST API data response."""
+    return _parse_scan_depth_value(
+        data,
+        element_code="SMS",
+        preferred_depth_in=_SCAN_SOIL_MOISTURE_DEPTH_IN,
+        default_value=OPTIMAL_SOIL_MOISTURE_PCT,
+    )
 
 
 def _parse_scan_soil_temp(data: Any) -> float:
     """Extract soil temperature from USDA AWDB REST API data response."""
+    return _parse_scan_depth_value(
+        data,
+        element_code="STO",
+        preferred_depth_in=_SCAN_SOIL_TEMP_DEPTH_IN,
+        default_value=OPTIMAL_SOIL_TEMP_F,
+    )
+
+
+def _parse_scan_depth_value(
+    data: Any,
+    *,
+    element_code: str,
+    preferred_depth_in: int,
+    default_value: float,
+) -> float:
+    """Extract the newest value closest to a preferred SCAN depth."""
     candidates = _scan_data_records(data)
     best_depth_distance: float | None = None
     best_value: float | None = None
@@ -1062,18 +1081,18 @@ def _parse_scan_soil_temp(data: Any) -> float:
     for record in candidates:
         station_element = record.get("stationElement")
         if isinstance(station_element, dict):
-            element_code = station_element.get("elementCode")
-            if element_code not in (None, "STO"):
+            record_element_code = station_element.get("elementCode")
+            if record_element_code not in (None, element_code):
                 continue
             depth = station_element.get("heightDepth")
         else:
             depth = None
 
-        value = _scan_first_value(record.get("values"))
+        value = _scan_latest_value(record.get("values"))
         if value is None:
             continue
 
-        depth_distance = _scan_depth_distance(depth)
+        depth_distance = _scan_depth_distance(depth, preferred_depth_in)
         if best_value is None or best_depth_distance is None:
             best_depth_distance = depth_distance
             best_value = value
@@ -1087,7 +1106,7 @@ def _parse_scan_soil_temp(data: Any) -> float:
     if best_value is not None:
         return best_value
 
-    return OPTIMAL_SOIL_TEMP_F
+    return default_value
 
 
 def _scan_data_records(data: Any) -> list[dict[str, Any]]:
@@ -1103,12 +1122,12 @@ def _scan_data_records(data: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _scan_first_value(values: Any) -> float | None:
-    """Return the first non-null numeric USDA AWDB value."""
+def _scan_latest_value(values: Any) -> float | None:
+    """Return the newest non-null numeric USDA AWDB value."""
     if not isinstance(values, list):
         return None
 
-    for item in values:
+    for item in reversed(values):
         candidate = item.get("value") if isinstance(item, dict) else item
         if candidate is None:
             continue
@@ -1120,9 +1139,9 @@ def _scan_first_value(values: Any) -> float | None:
     return None
 
 
-def _scan_depth_distance(depth: Any) -> float:
-    """Score how close a station element depth is to the preferred 2-inch reading."""
+def _scan_depth_distance(depth: Any, preferred_depth_in: int) -> float:
+    """Score how close a station element depth is to a preferred depth."""
     try:
-        return float(abs(int(depth) - _SCAN_SOIL_TEMP_DEPTH_IN))
+        return float(abs(abs(int(depth)) - preferred_depth_in))
     except (TypeError, ValueError):
         return math.inf

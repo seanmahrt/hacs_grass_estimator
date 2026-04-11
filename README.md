@@ -52,7 +52,7 @@ A Home Assistant custom integration that estimates your current grass height bas
 | **Height tracking** | Estimates grass height in inches since the last mow |
 | **Growing Degree Days** | Reads daily high/low temperature from the HA weather entity to compute GDD-based growth acceleration |
 | **Rainfall factor** | Today's precipitation from the HA weather entity boosts the daily growth rate |
-| **Soil moisture factor** | National Soil Moisture Network API adjusts growth for wet/dry soil |
+| **Soil moisture factor** | Nearest USDA SCAN station volumetric soil moisture adjusts growth for wet/dry soil, preferring the depth closest to 5 cm (about 2 in) |
 | **Soil temperature factor** | Nearest USDA SCAN station soil temperature scales growth, using the USDA AWDB `elements` API and preferring the 2-inch depth with fallback to the nearest reported depth |
 | **Seasonal factor** | Month-based multiplier tuned for Northern Hemisphere cool-season turf |
 | **Toggle multipliers** | Each factor can be individually enabled or disabled |
@@ -325,7 +325,7 @@ Each input to the growth model is also exposed as its own sensor so you can moni
 | `sensor.next_dry_mow_window` | timestamp | Start time of the next forecasted dry window long enough to complete a full mow cycle, or `unknown` if none found in the lookahead period. |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's total forecast precipitation from the weather entity (full-day total; drives the rain growth multiplier). Attributes expose `past_rainfall_in` (rain already fallen, used for wet-grass detection) and `current_surface_moisture_in` |
-| `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
+| `sensor.soil_moisture` | % | Volumetric soil moisture from the nearest USDA SCAN station, preferring the depth closest to 5 cm (about 2 in) |
 | `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
 | `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
 

@@ -54,7 +54,7 @@ When an upstream dependency fails, the coordinator raises a Home Assistant persi
 | `sensor.next_dry_mow_window` | timestamp | Start time of the next forecasted dry window long enough for a full mow cycle; `unknown` if none found in the lookahead period |
 | `sensor.growing_degree_days` | °F·d | Today's GDD (avg temp − 50 °F base, floored at 0) |
 | `sensor.rainfall` | in | Today's precipitation from OpenWeatherMap |
-| `sensor.soil_moisture` | % | Volumetric soil moisture from National Soil Moisture Network |
+| `sensor.soil_moisture` | % | Volumetric soil moisture from the nearest USDA SCAN station, preferring the depth closest to 5 cm (about 2 in) |
 | `sensor.soil_temperature` | °F | 2-inch soil temperature from the nearest USDA SCAN station |
 | `sensor.season_factor` | *(dimensionless)* | Current month's seasonal growth multiplier (0.30 – 1.50) |
 
@@ -103,8 +103,7 @@ flowchart TD
 
     subgraph EXTERNAL["External APIs (soil only; weather data comes via HA weather entity)"]
         WEATHER["HA Weather Entity\n(e.g. weather.openweathermap)\ndaily + hourly forecasts"]
-        NSM["National Soil Moisture Network\nVolumetric soil moisture %"]
-        SCAN["USDA SCAN REST API\nNearby station lookup\n2-inch soil temperature"]
+        SCAN["USDA SCAN REST API\nNearby station lookup\n2-inch soil moisture + temperature"]
         PN["Persistent Notification\nupstream failures / recovery"]
     end
 
@@ -117,7 +116,6 @@ flowchart TD
     COORD -->|"subscribes"| BUTTON
     COORD <-->|"persist mow state\nmow session state"| STORE
     COORD -->|"weather.get_forecasts (daily + hourly)"| WEATHER
-    COORD -->|"fetch if TTL elapsed"| NSM
     COORD -->|"resolve once, then fetch"| SCAN
     COORD -->|"create/dismiss"| PN
     SVC -->|"async_mark_mowed()\nthen async_refresh()"| COORD
@@ -134,7 +132,6 @@ sequenceDiagram
     participant HA as Home Assistant
     participant Coord as GrassGrowthCoordinator
     participant OWM as OpenWeatherMap 3.0
-    participant NSM as Natl Soil Moisture
     participant SCAN as USDA SCAN
     participant Store as HA Storage
 
@@ -150,8 +147,8 @@ sequenceDiagram
         HAWeather-->>Coord: hourly {temperature, precipitation, humidity, precipitation_probability}
         note over Coord: The HA weather entity manages its own OWM fetch schedule
         alt soil moisture TTL elapsed
-            Coord->>NSM: GET moisture at depth=5 cm
-            NSM-->>Coord: volumetric soil moisture %
+            Coord->>SCAN: GET elements=SMS:* daily
+            SCAN-->>Coord: soil moisture % at nearest depth to 5 cm
         end
         alt soil temp TTL elapsed
             Coord->>SCAN: GET nearest station (radius 200 mi, once)
@@ -284,6 +281,8 @@ The floor of `0.80` is a safety net; since `rainfall_in ≥ 0`, the formula alwa
 ---
 
 ### Soil Moisture Factor
+
+Soil moisture is now sourced from the nearest USDA SCAN station rather than the defunct National Soil Moisture Network endpoint used previously. The integration requests all SCAN `SMS` depths, then selects the depth closest to 5 cm (approximately 2 in) and uses the newest available daily value.
 
 Maps volumetric soil moisture percentage to a growth multiplier. Optimal range is 30–65%.
 
@@ -469,7 +468,7 @@ mow_recommended =
 |---|---|---|
 | HA weather entity (daily forecast: GDD + rainfall) | 55 min TTL | TTL-guarded: `weather.get_forecasts` is only called when cached data is ≥ 55 min old. The 55 min TTL is slightly shorter than the hourly schedule so every `:50` tick reliably picks up a fresh forecast. Refreshes triggered by `mark_mowed` or `mow_complete` reuse cached weather data if it is still fresh. |
 | HA weather entity (hourly forecast: humidity + rain per hour) | 55 min TTL | Fetched in the same guarded call as the daily forecast. Past hourly slots (slots whose datetime ≤ now) are summed to `past_rainfall_in` for wet-grass detection; future slots are used only for dry-window scheduling. |
-| National Soil Moisture Network (soil moisture %) | 12 hours | In-memory cache only |
+| USDA SCAN (soil moisture %, nearest depth to 5 cm / 2 in) | 12 hours | Station triplet resolved once, then cached in memory |
 | USDA SCAN (2-inch soil temperature) | 12 hours | Station triplet resolved once, then cached in memory |
 | Persistent notifications for upstream failures | Event-driven | Created on first failure per source, dismissed automatically after recovery |
 | Coordinator refresh (height calculation + all sensor updates) | Hourly at :50 UTC | Driven by `async_track_utc_time_change` (minute=50, second=0). Fires 10 minutes before each new hourly forecast boundary so sensor state is current when dry-window automations trigger at the top of the hour. Weather data only re-fetched when 55 min TTL has elapsed; soil data only when 12 h TTL has elapsed. |
