@@ -179,17 +179,23 @@ sequenceDiagram
 ---
 
 ## Growth Model
-
-```mermaid
-flowchart LR
     BR["Base growth rate\n(in/day, user-configured)"]
-    SF["Season factor\n(monthly multiplier\n0.30 – 1.50)"]
-    GF["GDD factor\n(0.05 – 2.0)\n= GDD / 20"]
-    RF["Rain factor\n(0.8 – 1.5)\n= 1 + rainfall × 0.25"]
-    MF["Soil moisture factor\n(0.05 – 1.0)"]
-    TF["Soil temp factor\n(0.05 – 1.0)"]
+
+```
+current_height = mowed_to_height + days_since_mow × daily_rate
 
     BR --> MULT["daily_rate =\nbase × season × GDD × rain\n× soil_moisture × soil_temp"]
+           × global_growth_adjustment  (user-configurable, 0.1–2.0)
+           × season_factor   (0.30 – 1.50, by month)
+           × gdd_factor      (0.05 – 2.0,  GDD / 20)
+           × rain_factor     (0.80 – 1.50, 1 + rainfall_in × 0.25)
+           × soil_moisture   (0.05 – 1.0,  piecewise by %)
+           × soil_temp       (0.00 – 1.0,  piecewise by °F)
+```
+
+#### Global Growth Adjustment
+
+An overall **growth rate adjustment** parameter multiplies the computed daily growth rate by a user-configurable factor (default 1.0, range 0.1–2.0). This allows users to tune the model up or down to better match real-world growth, compensating for local conditions or model bias. All other multipliers and logic remain unchanged.
     SF --> MULT
     GF --> MULT
     RF --> MULT
@@ -205,8 +211,16 @@ The SCAN soil-temperature fetch uses the USDA AWDB `elements` query parameter (`
 
 ### Height Formula
 
+Growth is accumulated **incrementally** rather than recalculated from scratch
+each refresh.  Each coordinator refresh adds `daily_rate × elapsed_days` to a
+persisted `accumulated_growth` value.  This makes growth **monotonically
+non-decreasing** between mows — it can never decrease when weather conditions
+change, which was a bug in the previous `days × rate` model.
+
 ```
-current_height = mowed_to_height + days_since_mow × daily_rate
+accumulated_growth += daily_rate × (now − last_refresh_timestamp) / 86400
+
+current_height = mowed_to_height + accumulated_growth
 
 daily_rate = base_rate
            × season_factor   (0.30 – 1.50, by month)
@@ -215,6 +229,23 @@ daily_rate = base_rate
            × soil_moisture   (0.05 – 1.0,  piecewise by %)
            × soil_temp       (0.00 – 1.0,  piecewise by °F)
 ```
+
+On upgrade from a version that used the old `days × rate` formula, the
+coordinator seeds `accumulated_growth` with `days_since_mow × daily_rate`
+on the first refresh so existing users retain continuity.
+
+On any mow event (`mark_mowed` or `mow_complete`), `accumulated_growth`
+is reset to `0.0` and `last_refresh_timestamp` is set to the mow time.
+
+### Robustness Enhancement
+
+To further ensure that growth is always non-decreasing, an additional safeguard was implemented in the accumulation logic. Even in edge cases where incremental calculations might result in a lower value, the system now explicitly ensures that `accumulated_growth` never decreases by using:
+
+```
+accumulated = max(accumulated, prev_accumulated)
+```
+
+This provides an extra layer of robustness to prevent any potential decrease in growth between refreshes.
 
 ---
 
@@ -497,6 +528,7 @@ All data is written to HA's built-in `.storage/` mechanism and survives restarts
 | Weather entity | HA weather entity ID for daily + hourly forecast data | `weather.openweathermap` |
 | Mowed to height | Starting height after a mow (in) | 3.0 in |
 | Base growth rate | Daily growth rate ceiling (in/day) | 0.15 in/day |
+| **Growth rate adjustment** | Multiplies the computed daily growth rate (all factors) for overall tuning | 1.0 |
 | Enable seasonal | Apply monthly growth multiplier | ✓ |
 | Enable GDD | Scale by growing degree days | ✓ |
 | Enable rain | Scale by daily rainfall | ✓ |
