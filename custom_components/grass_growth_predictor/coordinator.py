@@ -63,9 +63,7 @@ from .const import (
     SOIL_UPDATE_INTERVAL,
     STORAGE_KEY,
     STORAGE_VERSION,
-    STORE_ACCUMULATED_GROWTH,
     STORE_LAST_MOW_TIMESTAMP,
-    STORE_LAST_REFRESH_TIMESTAMP,
     STORE_MOW_SESSION_ACTIVE,
     STORE_MOWED_TO_HEIGHT,
 )
@@ -77,37 +75,8 @@ _SCAN_SOIL_TEMP_DEPTH_IN = 2
 _UPSTREAM_ALERT_PREFIX = f"{DOMAIN}_upstream"
 
 
-
 class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Manage fetching and computing grass height data."""
-
-    def _mow_window_rain_and_humidity(self) -> dict:
-        """Calculate total predicted rain and average humidity over the mowing window duration, with hourly details."""
-        cfg = self._cfg
-        mow_cycle_h = float(cfg.get(CONF_MOW_CYCLE_DURATION_HOURS, DEFAULT_MOW_CYCLE_DURATION_HOURS))
-        hourly = self._hourly_forecast or []
-        rain_sum = 0.0
-        humidity_sum = 0.0
-        count = 0
-        hourly_details = []
-        for slot in hourly[:max(1, math.ceil(mow_cycle_h))]:
-            rain = float(slot.get("rain_1h", 0.0))
-            humidity = float(slot.get("humidity", 0.0))
-            dt_epoch = int(slot.get("dt", 0))
-            rain_sum += rain
-            humidity_sum += humidity
-            count += 1
-            hourly_details.append({
-                "dt": dt_epoch,
-                "rain_1h": rain,
-                "humidity": humidity
-            })
-        avg_humidity = humidity_sum / count if count else None
-        return {
-            "predicted_rain_in": round(rain_sum, 3) if count else None,
-            "avg_humidity_pct": round(avg_humidity, 1) if avg_humidity is not None else None,
-            "hourly_details": hourly_details if count else None,
-        }
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
@@ -220,22 +189,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def mow_session_active(self) -> bool:
         return bool(self._stored_data.get(STORE_MOW_SESSION_ACTIVE, False))
 
-    @property
-    def accumulated_growth(self) -> float:
-        """Total growth accumulated (inches) since the last mow."""
-        return float(self._stored_data.get(STORE_ACCUMULATED_GROWTH, 0.0))
-
-    @property
-    def last_refresh_timestamp(self) -> datetime | None:
-        """Timestamp of the last coordinator refresh that updated growth."""
-        raw = self._stored_data.get(STORE_LAST_REFRESH_TIMESTAMP)
-        if not raw:
-            return None
-        try:
-            return datetime.fromisoformat(raw)
-        except (ValueError, TypeError):
-            return None
-
     # ------------------------------------------------------------------
     # Setup / service handlers
     # ------------------------------------------------------------------
@@ -247,15 +200,12 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._stored_data = dict(stored)
             _LOGGER.info(
                 "Loaded stored mow data: last_mow=%s, "
-                "mowed_to_height=%.1f in, session_active=%s, "
-                "accumulated_growth=%.3f in, last_refresh=%s",
+                "mowed_to_height=%.1f in, session_active=%s",
                 stored.get(STORE_LAST_MOW_TIMESTAMP, "none"),
                 float(stored.get(
                     STORE_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT
                 )),
                 stored.get(STORE_MOW_SESSION_ACTIVE, False),
-                float(stored.get(STORE_ACCUMULATED_GROWTH, 0.0)),
-                stored.get(STORE_LAST_REFRESH_TIMESTAMP, "none"),
             )
         else:
             _LOGGER.info(
@@ -322,8 +272,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         Also clears any active mow session so the switch is not left ON
         when a manual mow is recorded outside of the automated session flow.
-        Resets accumulated growth to zero and sets the refresh timestamp so
-        the incremental growth model starts fresh.
         """
         now = dt_util.now()
         if mowed_to_height is None:
@@ -336,17 +284,11 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stored_data[STORE_LAST_MOW_TIMESTAMP] = now.isoformat()
         self._stored_data[STORE_MOWED_TO_HEIGHT] = float(mowed_to_height)
         self._stored_data[STORE_MOW_SESSION_ACTIVE] = False
-        self._stored_data[STORE_ACCUMULATED_GROWTH] = 0.0
-        self._stored_data[STORE_LAST_REFRESH_TIMESTAMP] = now.isoformat()
         await self._store.async_save(self._stored_data)
         await self.async_refresh()
 
     async def async_complete_mow(self, mowed_to_height: float | None = None) -> None:
-        """Record a completed mow from an automated session and end the session.
-
-        Resets accumulated growth to zero and sets the refresh timestamp so
-        the incremental growth model starts fresh.
-        """
+        """Record a completed mow from an automated session and end the session."""
         now = dt_util.now()
         if mowed_to_height is None:
             mowed_to_height = self._cfg.get(CONF_MOWED_TO_HEIGHT, DEFAULT_MOWED_TO_HEIGHT)
@@ -357,8 +299,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stored_data[STORE_LAST_MOW_TIMESTAMP] = now.isoformat()
         self._stored_data[STORE_MOWED_TO_HEIGHT] = float(mowed_to_height)
         self._stored_data[STORE_MOW_SESSION_ACTIVE] = False
-        self._stored_data[STORE_ACCUMULATED_GROWTH] = 0.0
-        self._stored_data[STORE_LAST_REFRESH_TIMESTAMP] = now.isoformat()
         await self._store.async_save(self._stored_data)
         await self.async_refresh()
 
@@ -401,13 +341,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._soil_temp_needs_update(now):
             await self._fetch_soil_temp(session)
 
-        result = self._compute()
-
-        # Persist accumulated growth and last refresh timestamp
-        # (_compute updates _stored_data in memory; save to disk here)
-        await self._store.async_save(self._stored_data)
-
-        return result
+        return self._compute()
 
     # ------------------------------------------------------------------
     # TTL helpers
@@ -816,7 +750,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soil_temp_factor = _soil_temp_factor(soil_temp)
             enabled.append("soil_temp")
 
-        daily_rate_raw = (
+        daily_rate = (
             base_rate
             * season_factor
             * gdd_factor
@@ -824,64 +758,9 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             * soil_moisture_factor
             * soil_temp_factor
         )
-        daily_rate = max(0.0, daily_rate_raw)
 
-        # --- Incremental growth accumulation ---
-        # Instead of recalculating days_since_mow × daily_rate from scratch
-        # (which can decrease when the daily rate drops between refreshes),
-        # accumulate growth incrementally: each refresh adds daily_rate ×
-        # elapsed_days since the last refresh.  Growth is monotonically
-        # non-decreasing between mows.
-        last_refresh = self.last_refresh_timestamp
-        prev_accumulated = self.accumulated_growth
-
-        if last_refresh is None:
-            # First run or upgrade from older version without this field.
-            # Seed with the old formula for continuity so existing users
-            # don't lose their current growth estimate on upgrade.
-            if last_mow is not None:
-                accumulated = days_since_mow * daily_rate
-                _LOGGER.info(
-                    "Upgrade seed: accumulated_growth=%.4f in "
-                    "(days_since_mow=%.4f × daily_rate=%.6f)",
-                    accumulated, days_since_mow, daily_rate,
-                )
-            else:
-                accumulated = 0.0
-        else:
-            elapsed_days = max(
-                0.0,
-                (now - last_refresh).total_seconds() / 86_400.0,
-            )
-            incremental = daily_rate * elapsed_days
-            accumulated = prev_accumulated + incremental
-            # Ensure growth is monotonically non-decreasing
-            accumulated = max(accumulated, prev_accumulated)
-            _LOGGER.debug(
-                "Incremental growth: prev=%.4f + %.6f in/day × %.4f days"
-                " = %.4f in",
-                prev_accumulated, daily_rate, elapsed_days, accumulated,
-            )
-
-        # Update in-memory storage (persisted by _async_update_data)
-        self._stored_data[STORE_ACCUMULATED_GROWTH] = accumulated
-        self._stored_data[STORE_LAST_REFRESH_TIMESTAMP] = now.isoformat()
-
-        growth_since_mow = max(0.0, accumulated)
-        current_height = self.mowed_to_height + growth_since_mow
-
-        _LOGGER.debug(
-            "Growth calculation: current_height=%.4f, mowed_to_height=%.4f,"
-            " days_since_mow=%.4f, daily_rate=%.6f, accumulated=%.4f,"
-            " last_mow=%s, base_rate=%.6f, season_factor=%.4f,"
-            " gdd_factor=%.4f, rain_factor=%.4f,"
-            " soil_moisture_factor=%.4f, soil_temp_factor=%.4f,"
-            " enabled=%s",
-            current_height, self.mowed_to_height, days_since_mow,
-            daily_rate, accumulated, str(last_mow), base_rate,
-            season_factor, gdd_factor, rain_factor,
-            soil_moisture_factor, soil_temp_factor, enabled,
-        )
+        current_height = self.mowed_to_height + days_since_mow * daily_rate
+        growth_since_mow = max(0.0, current_height - self.mowed_to_height)
 
         # --- Wet grass detection ---
         # Prefer the first hourly slot for current conditions; fall back to entity state attrs.
@@ -989,7 +868,7 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             dry_window_dt.isoformat() if dry_window_dt else "none",
         )
 
-        result = {
+        return {
             "current_height": round(current_height, 2),
             "daily_growth_rate": round(daily_rate, 5),
             "days_since_mow": round(days_since_mow, 3),
@@ -1011,9 +890,6 @@ class GrassGrowthCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             BINARY_SENSOR_MOW_RECOMMENDED: mow_recommended,
             BINARY_SENSOR_MOW_OVERDUE: mow_overdue,
         }
-        # Add predicted rain and humidity for the mowing window
-        result.update(self._mow_window_rain_and_humidity())
-        return result
 
 
 # ------------------------------------------------------------------
