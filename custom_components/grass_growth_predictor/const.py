@@ -85,6 +85,8 @@ SERVICE_MARK_MOWED = "mark_mowed"
 STORE_LAST_MOW_TIMESTAMP = "last_mow_timestamp"
 STORE_MOWED_TO_HEIGHT = "mowed_to_height"
 STORE_MOW_SESSION_ACTIVE = "mow_session_active"
+STORE_ACCUMULATED_GROWTH = "accumulated_growth"
+STORE_LAST_REFRESH_TIMESTAMP = "last_refresh_timestamp"
 
 # ----- Sensor / attribute names -----
 SENSOR_CURRENT_GRASS_HEIGHT = "current_grass_height"
